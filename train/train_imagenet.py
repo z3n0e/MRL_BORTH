@@ -620,21 +620,38 @@ class ImageNetTrainer:
     @param('logging.folder')
     @param('logging.run_name')
     def initialize_logger(self, folder, run_name):
+        def accuracy_meter(top_k=1):
+            try:
+                return torchmetrics.Accuracy(
+                    task='multiclass',
+                    num_classes=self.num_classes,
+                    top_k=top_k
+                ).to(self.device)
+            except TypeError:
+                kwargs = {'top_k': top_k} if top_k != 1 else {}
+                try:
+                    return torchmetrics.Accuracy(
+                        compute_on_step=False,
+                        **kwargs
+                    ).to(self.device)
+                except TypeError:
+                    return torchmetrics.Accuracy(**kwargs).to(self.device)
+
         if self.nesting:
             self.val_meters={}
             for i in self.nesting_list:
-                self.val_meters['top_1_{}'.format(i)] = torchmetrics.Accuracy(compute_on_step=False).to(self.device)
+                self.val_meters['top_1_{}'.format(i)] = accuracy_meter()
 
             for i in self.nesting_list:
-                self.val_meters['top_5_{}'.format(i)] = torchmetrics.Accuracy(compute_on_step=False, top_k=5).to(self.device)
+                self.val_meters['top_5_{}'.format(i)] = accuracy_meter(top_k=5)
 
-            self.val_meters['loss'] = MeanScalarMetric(compute_on_step=False).to(self.device)
+            self.val_meters['loss'] = MeanScalarMetric().to(self.device)
 
         else:   
             self.val_meters = {
-                'top_1': torchmetrics.Accuracy(compute_on_step=False).to(self.device),
-                'top_5': torchmetrics.Accuracy(compute_on_step=False, top_k=5).to(self.device),
-                'loss': MeanScalarMetric(compute_on_step=False).to(self.device)
+                'top_1': accuracy_meter(),
+                'top_5': accuracy_meter(top_k=5),
+                'loss': MeanScalarMetric().to(self.device)
             }
 
         if self.gpu == 0:
