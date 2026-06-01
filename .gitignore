@@ -1,0 +1,7 @@
+.idea/
+retrieval/.idea/
+retrieval/.ipynb_checkpoints/
+.venv/
+__pycache__/
+data/
+cifar100_runs/

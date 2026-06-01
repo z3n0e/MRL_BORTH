@@ -1,0 +1,34 @@
+data:
+  dataset: cifar100
+  in_memory: 1
+  num_workers: 4
+dist:
+  world_size: 1
+logging:
+  folder: ./tmp/
+lr:
+  lr: 0.1
+  lr_schedule_type: cyclic
+model:
+  arch: resnet50
+resolution:
+  end_ramp: 0
+  max_res: 32
+  min_res: 32
+  start_ramp: 0
+training:
+  batch_size: 256
+  bn_wd: 0
+  deterministic: 1
+  distributed: 0
+  epochs: 40
+  label_smoothing: 0.1
+  momentum: 0.9
+  optimizer: sgd
+  seed: 0
+  weight_decay: 0.0001
+  use_blurpool: 1
+validation:
+  batch_size: 256
+  lr_tta: true
+  resolution: 32
