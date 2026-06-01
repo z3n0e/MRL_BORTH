@@ -41,6 +41,24 @@ When this flag is used, training switches to:
 
 When the flag is omitted, the trainer still uses ImageNet defaults: 1000 classes, ImageNet normalization, and `ImageFolder` datasets under `data.root/train` and `data.root/val`.
 
+## Training Variants
+
+The project now supports these training variants:
+
+- Standard MRL
+- MRL-E
+- Full-feature baseline
+- Fixed-feature baseline
+- BOR-MRL identity
+- BOR-MRL matrix_exp
+- BOR-MRL cayley
+- BOR-MRL householder
+- Independent-block BOR-MRL
+
+BOR-MRL builds each larger representation by applying an orthogonal transform to the previously trained prefix and concatenating the next raw residual coordinate block. With `[8, 16, 32]`, the classifiers see `h[:8]`, then `[Q_8 h[:8], h[8:16]]`, then `[Q_16 z_16, h[16:32]]`. Training still uses the same Matryoshka cross-entropy over independent linear softmax classifiers. No results are claimed here until the corresponding experiments are run.
+
+Independent-block BOR-MRL keeps the older behavior as a separate method: it transforms each residual block independently, concatenates the transformed blocks, and applies the same MRL softmax classifiers to transformed prefixes.
+
 ## CIFAR-100 Usage
 
 From the project root, run the deterministic CIFAR-100 workflow:

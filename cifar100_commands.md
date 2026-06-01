@@ -12,7 +12,7 @@ cd /home/sricci/Desktop/MRL_BORTH
 ./run_cifar100_experiments.sh
 ```
 
-The script trains and evaluates MRL, MRL-E, the full-feature baseline, and fixed-feature baselines on CIFAR-100. Results are written under `cifar100_runs/`, and `cifar100_results.ipynb` visualizes the outputs.
+The script trains and evaluates MRL, MRL-E, recursive-prefix BOR-MRL, independent-block BOR-MRL, BOR-MRL map ablations, the full-feature baseline, and fixed-feature baselines on CIFAR-100. Results are written under `cifar100_runs/`, and `cifar100_results.ipynb` visualizes the outputs.
 
 The default CIFAR-100 data root is `$HOME/.cache/torchvision`. Override it with:
 
@@ -75,7 +75,90 @@ You can replace `512` with another representation size, for example:
 8, 16, 32, 64, 128, 256, 512, 1024, 2048
 ```
 
-## 6. Evaluate MRL
+## 6. Train BOR-MRL
+
+```bash
+python train_imagenet.py \
+  --config-file rn50_configs/rn50_cifar100.yaml \
+  --model.bor_mrl=1 \
+  --model.bor_mode=orthogonal \
+  --model.bor_orthogonal_map=matrix_exp \
+  --model.bor_use_trivialization=1 \
+  --data.root=/path/to/cifar100/root \
+  --logging.folder=trainlogs
+```
+
+## 7. Train BOR-MRL Identity Ablation
+
+```bash
+python train_imagenet.py \
+  --config-file rn50_configs/rn50_cifar100.yaml \
+  --model.bor_mrl=1 \
+  --model.bor_mode=identity \
+  --data.root=/path/to/cifar100/root \
+  --logging.folder=trainlogs
+```
+
+## 8. Train Independent-Block BOR-MRL
+
+This is the earlier variant where each residual block is transformed independently before the MRL classifiers see transformed prefixes.
+
+```bash
+python train_imagenet.py \
+  --config-file rn50_configs/rn50_cifar100.yaml \
+  --model.bor_block_mrl=1 \
+  --model.bor_mode=orthogonal \
+  --model.bor_orthogonal_map=matrix_exp \
+  --model.bor_use_trivialization=1 \
+  --data.root=/path/to/cifar100/root \
+  --logging.folder=trainlogs
+```
+
+## 9. Train BOR-MRL Map Ablations
+
+Cayley:
+
+```bash
+python train_imagenet.py \
+  --config-file rn50_configs/rn50_cifar100.yaml \
+  --model.bor_mrl=1 \
+  --model.bor_mode=orthogonal \
+  --model.bor_orthogonal_map=cayley \
+  --data.root=/path/to/cifar100/root \
+  --logging.folder=trainlogs
+```
+
+Householder:
+
+```bash
+python train_imagenet.py \
+  --config-file rn50_configs/rn50_cifar100.yaml \
+  --model.bor_mrl=1 \
+  --model.bor_mode=orthogonal \
+  --model.bor_orthogonal_map=householder \
+  --data.root=/path/to/cifar100/root \
+  --logging.folder=trainlogs
+```
+
+## 10. Evaluate BOR-MRL
+
+```bash
+cd ../inference
+
+python pytorch_inference.py \
+  --path ../train/trainlogs/<run_id>/final_weights.pt \
+  --dataset CIFAR100 \
+  --data_root /path/to/cifar100/root \
+  --bor_mrl \
+  --bor_mode orthogonal \
+  --bor_orthogonal_map matrix_exp
+```
+
+For identity, pass `--bor_mode identity`. For Cayley or Householder, pass the matching `--bor_orthogonal_map`.
+
+To evaluate the independent-block variant, replace `--bor_mrl` with `--bor_block_mrl`.
+
+## 11. Evaluate MRL
 
 Replace `<run_id>` with the folder created under `train/trainlogs/`.
 
@@ -89,7 +172,7 @@ python pytorch_inference.py \
   --mrl
 ```
 
-## 7. Evaluate MRL-E
+## 12. Evaluate MRL-E
 
 ```bash
 python pytorch_inference.py \
@@ -100,7 +183,7 @@ python pytorch_inference.py \
   --efficient
 ```
 
-## 8. Evaluate Fixed-Feature Baseline
+## 13. Evaluate Fixed-Feature Baseline
 
 Example with 512 feature dimensions:
 
@@ -112,7 +195,7 @@ python pytorch_inference.py \
   --rep_size 512
 ```
 
-## 9. Evaluate Full-Feature Baseline
+## 14. Evaluate Full-Feature Baseline
 
 Use `--rep_size 2048` for the full 2048-dimensional classifier:
 
@@ -127,5 +210,6 @@ python pytorch_inference.py \
 ## Notes
 
 - ImageNet remains the default dataset. CIFAR-100 is selected by the config file during training and by `--dataset CIFAR100` during inference.
-- The MRL method is unchanged; only dataset metadata, class count, normalization, and data loading change for CIFAR-100.
-- Training checkpoints are saved as `final_weights.pt` inside a run-specific folder under `trainlogs`.
+- Standard MRL is unchanged; BOR-MRL variants are selected explicitly with `--model.bor_mrl=1` or `--model.bor_block_mrl=1`.
+- During training, each run writes `latest_weights.pt`; after completion it writes `final_weights.pt`.
+- The runner also copies every method's final checkpoint into `checkpoints/` as `<run_name>_final_weights.pt`.

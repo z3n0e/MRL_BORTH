@@ -42,7 +42,12 @@ Section('model', 'model details').params(
     efficient=Param(int, "MRL-E?", default=0),
     mrl=Param(int, "MRL?", default=0),
     nesting_start=Param(int, '2**i will be starting dimension for nesting', default=3),
-    fixed_feature=Param(int, 'In case we want to do the fixed feature training, by default it is 2048', default=2048)
+    fixed_feature=Param(int, 'In case we want to do the fixed feature training, by default it is 2048', default=2048),
+    bor_mrl=Param(int, 'Use recursive-prefix Block-Orthogonal Residual MRL? (1/0)', default=0),
+    bor_block_mrl=Param(int, 'Use independent-block Block-Orthogonal Residual MRL? (1/0)', default=0),
+    bor_mode=Param(And(str, OneOf(['identity', 'orthogonal'])), 'BOR block transform mode', default='orthogonal'),
+    bor_orthogonal_map=Param(And(str, OneOf(['matrix_exp', 'cayley', 'householder'])), 'BOR orthogonal parametrization map', default='matrix_exp'),
+    bor_use_trivialization=Param(int, 'Use dynamic trivialization for BOR orthogonal maps? (1/0)', default=1)
 )
 
 Section('resolution', 'resolution scheduling').params(
@@ -181,12 +186,15 @@ class ImageNetTrainer:
     @param('training.distributed')
     @param('model.efficient')
     @param('model.mrl')
+    @param('model.bor_mrl')
+    @param('model.bor_block_mrl')
     @param('model.nesting_start')
     @param('model.fixed_feature')
     @param('data.dataset')
     @param('training.seed')
     @param('training.deterministic')
-    def __init__(self, gpu, distributed, efficient, mrl, nesting_start, fixed_feature,
+    def __init__(self, gpu, distributed, efficient, mrl, bor_mrl, bor_block_mrl,
+                 nesting_start, fixed_feature,
                  dataset, seed, deterministic):
         self.all_params = get_current_config(); 
         self.gpu = gpu
@@ -194,7 +202,15 @@ class ImageNetTrainer:
         self.deterministic = deterministic
         set_reproducibility(seed, deterministic)
         self.efficient = efficient
-        self.nesting = (self.efficient or mrl)
+        self.bor_mrl = bool(bor_mrl)
+        self.bor_block_mrl = bool(bor_block_mrl)
+        if self.bor_mrl and self.bor_block_mrl:
+            raise ValueError("Choose only one BOR-MRL method: --model.bor_mrl=1 or --model.bor_block_mrl=1.")
+        if (self.bor_mrl or self.bor_block_mrl) and mrl:
+            raise ValueError("BOR-MRL is its own MRL variant; do not combine BOR-MRL with --model.mrl=1.")
+        if (self.bor_mrl or self.bor_block_mrl) and self.efficient:
+            raise ValueError("BOR-MRL currently uses one classifier per prefix; do not combine BOR-MRL with --model.efficient=1.")
+        self.nesting = (self.efficient or mrl or self.bor_mrl or self.bor_block_mrl)
         self.nesting_start = nesting_start
         self.nesting_list = [2**i for i in range(self.nesting_start, 12)] if self.nesting else None
         self.fixed_feature=fixed_feature
@@ -418,6 +434,7 @@ class ImageNetTrainer:
     @param('training.epochs')
     @param('logging.log_level')
     def train(self, epochs, log_level):
+        epoch = -1
         for epoch in range(epochs):
             # TODO: Dynamic resolution scheduling with TorchVision requires
             # rebuilding the train transform/loader per epoch. Training uses
@@ -432,9 +449,24 @@ class ImageNetTrainer:
 
                 self.eval_and_log(extra_dict)
 
+            self.save_checkpoint('latest_weights.pt', epoch=epoch)
+
         self.eval_and_log({'epoch':epoch})
-        if self.gpu == 0:
-            ch.save(self.model.state_dict(), self.log_folder / 'final_weights.pt')
+        self.save_checkpoint('final_weights.pt', epoch=epoch)
+
+    def save_checkpoint(self, filename, epoch=None):
+        if self.gpu != 0:
+            return
+
+        checkpoint_path = self.log_folder / filename
+        ch.save(self.model.state_dict(), checkpoint_path)
+        metadata = {
+            'checkpoint': filename,
+            'epoch': epoch,
+            'saved_at': time.time()
+        }
+        with open(self.log_folder / f'{filename}.json', 'w') as handle:
+            json.dump(metadata, handle, indent=2)
 
     def eval_and_log(self, extra_dict={}):
         start_val = time.time()
@@ -462,7 +494,11 @@ class ImageNetTrainer:
     @param('model.pretrained')
     @param('training.distributed')
     @param('training.use_blurpool') # Later Arguments for nesting/fixed_feat
-    def create_model_and_scaler(self, arch, pretrained, distributed, use_blurpool):
+    @param('model.bor_mode')
+    @param('model.bor_orthogonal_map')
+    @param('model.bor_use_trivialization')
+    def create_model_and_scaler(self, arch, pretrained, distributed, use_blurpool,
+                                bor_mode, bor_orthogonal_map, bor_use_trivialization):
         '''
         Nesting Start is just the log_2 {smallest dim} unit. In our work we used powers of two, however this part can be changed easily. 
         If we do not want to use MRL, we just keep both the efficient and mrl flags to 0
@@ -474,7 +510,25 @@ class ImageNetTrainer:
         scaler = GradScaler()
         model = getattr(models, arch)(pretrained=pretrained)
 
-        if self.nesting:
+        if self.bor_mrl:
+            print("Creating classification layer of type :\t BOR-MRL (recursive prefix)")
+            model.fc = BlockOrthogonalResidualMRLHead(
+                self.nesting_list,
+                num_classes=self.num_classes,
+                mode=bor_mode,
+                orthogonal_map=bor_orthogonal_map,
+                use_trivialization=bool(bor_use_trivialization),
+            )
+        elif self.bor_block_mrl:
+            print("Creating classification layer of type :\t BOR-MRL (independent residual blocks)")
+            model.fc = IndependentBlockOrthogonalMRLHead(
+                self.nesting_list,
+                num_classes=self.num_classes,
+                mode=bor_mode,
+                orthogonal_map=bor_orthogonal_map,
+                use_trivialization=bool(bor_use_trivialization),
+            )
+        elif self.nesting:
             ff= "MRL-E" if self.efficient else "MRL"
             print(f"Creating classification layer of type :\t {ff}")
             model.fc = MRL_Linear_Layer(self.nesting_list, num_classes=self.num_classes, efficient=self.efficient)

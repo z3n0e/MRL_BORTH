@@ -48,6 +48,35 @@ fc_layer = MRL_Linear_Layer(nesting_list, num_classes=1000, efficient=efficient)
 ```
 Where `nesting_list` is the list of representation sizes we wish to train on, `num_classes` is the number of output features, and the `efficient` flag is to train MRL-E.
 
+## Block-Orthogonal Residual MRL / BOR-MRL
+
+BOR-MRL is a prefix-preserving variant of Matryoshka training. Standard MRL applies classifiers to coordinate prefixes of one feature vector. The main BOR-MRL method keeps the smallest prefix unchanged, then builds each larger representation by passing the previously built prefix through an orthogonal layer and concatenating the next raw residual block. For example, with `[8, 16, 32]`, the 8-dimensional classifier sees raw `h[:8]`; the 16-dimensional classifier sees `[Q_8 h[:8], h[8:16]]`; the 32-dimensional classifier sees `[Q_16 z_16, h[16:32]]`.
+
+A single full-feature orthogonal layer would be mathematically wrong for Matryoshka prefixes because it could mix later coordinates into earlier prefixes. BOR-MRL only transforms already-available lower-dimensional prefixes before adding new coordinates. After that transform, it uses the same style of independent linear prefix classifiers and softmax cross-entropy training as standard MRL. The default implementation uses PyTorch orthogonal parametrization with the `matrix_exp` map; `cayley` and `householder` are available for ablations. `identity` mode skips the orthogonal prefix transforms.
+
+The repository also includes the earlier independent-block variant behind `--model.bor_block_mrl=1`. That method transforms every residual coordinate block separately, then applies the MRL classifiers to prefixes of the transformed vector. With `[8, 16, 32]`, it builds `[Q_8 h[:8], Q_8' h[8:16], Q_16 h[16:32]]` and classifies the 8, 16, and 32 dimensional prefixes of that transformed vector.
+
+Example CIFAR-100 run:
+
+```bash
+cd train
+python train_imagenet.py \
+  --config-file rn50_configs/rn50_cifar100.yaml \
+  --data.root="$HOME/.cache/torchvision" \
+  --model.bor_mrl=1 \
+  --model.bor_mode=orthogonal \
+  --model.bor_orthogonal_map=matrix_exp \
+  --model.bor_use_trivialization=1 \
+  --logging.folder=./tmp \
+  --logging.run_name=bor_mrl_cifar100
+```
+
+For the independent residual-block variant, replace `--model.bor_mrl=1` with:
+
+```bash
+--model.bor_block_mrl=1
+```
+
 ## [Training ResNet50 models](train/)
 <p align="center">
 <img src="./images/mrl-r50-accuracy.jpeg" width="784"/>

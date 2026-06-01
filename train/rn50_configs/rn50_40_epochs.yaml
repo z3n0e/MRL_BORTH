@@ -13,6 +13,11 @@ lr:
   lr_schedule_type: cyclic
 model:
   arch: resnet50
+  bor_mrl: 0
+  bor_block_mrl: 0
+  bor_mode: orthogonal
+  bor_orthogonal_map: matrix_exp
+  bor_use_trivialization: 1
 resolution:
   end_ramp: 34
   max_res: 192

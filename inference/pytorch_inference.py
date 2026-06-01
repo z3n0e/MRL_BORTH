@@ -94,6 +94,11 @@ parser.add_argument('--rep_size', type=int, default=2048, help='Rep. size for fi
 parser.add_argument('--path', type=str, required=True, help='Path to .pt model checkpoint')
 parser.add_argument('--old_ckpt', action='store_true', help='To use our trained checkpoints')
 parser.add_argument('--workers', type=int, default=12, help='num workers for dataloader')
+parser.add_argument('--bor_mrl', action='store_true', help='Use recursive-prefix Block-Orthogonal Residual MRL')
+parser.add_argument('--bor_block_mrl', action='store_true', help='Use independent-block Block-Orthogonal Residual MRL')
+parser.add_argument('--bor_mode', type=str, choices=['identity', 'orthogonal'], default='orthogonal', help='BOR block transform mode')
+parser.add_argument('--bor_orthogonal_map', type=str, choices=['matrix_exp', 'cayley', 'householder'], default='matrix_exp', help='BOR orthogonal parametrization map')
+parser.add_argument('--bor_use_trivialization', type=int, default=1, help='Use dynamic trivialization for BOR orthogonal maps')
 # dataset/eval args
 parser.add_argument('--tta', action='store_true', help='Test Time Augmentation Flag')
 parser.add_argument('--dataset', type=str, default='V1', help='Benchmarks: V1/V2/A/Sketch/R/CIFAR100')
@@ -112,13 +117,38 @@ parser.add_argument('--retrieval_array_path', default='', help='path to save dat
 
 
 args = parser.parse_args()
+if args.bor_mrl and args.bor_block_mrl:
+	raise ValueError("Choose only one BOR-MRL method: --bor_mrl or --bor_block_mrl.")
+if (args.bor_mrl or args.bor_block_mrl) and args.mrl:
+	raise ValueError("BOR-MRL is its own MRL variant; do not combine BOR-MRL with --mrl.")
+if (args.bor_mrl or args.bor_block_mrl) and args.efficient:
+	raise ValueError("BOR-MRL currently uses one classifier per prefix; do not combine BOR-MRL with --efficient.")
+if (args.bor_mrl or args.bor_block_mrl) and args.retrieval:
+	raise NotImplementedError("--retrieval with BOR-MRL is not implemented because BOR-MRL transforms residual blocks inside the classification head.")
+
 set_eval_reproducibility(args.seed, args.deterministic)
 dataset_config = get_dataset_config(args.dataset)
 num_classes = dataset_config['num_classes']
 data_root = Path(args.data_root)
 
 model = resnet50(False)
-if not args.old_ckpt:
+if args.bor_mrl:
+	model.fc = BlockOrthogonalResidualMRLHead(
+		NESTING_LIST,
+		num_classes=num_classes,
+		mode=args.bor_mode,
+		orthogonal_map=args.bor_orthogonal_map,
+		use_trivialization=bool(args.bor_use_trivialization),
+	)
+elif args.bor_block_mrl:
+	model.fc = IndependentBlockOrthogonalMRLHead(
+		NESTING_LIST,
+		num_classes=num_classes,
+		mode=args.bor_mode,
+		orthogonal_map=args.bor_orthogonal_map,
+		use_trivialization=bool(args.bor_use_trivialization),
+	)
+elif not args.old_ckpt:
 	if args.mrl:
 		model.fc = MRL_Linear_Layer(NESTING_LIST, num_classes=num_classes, efficient=args.efficient)
 	else:
@@ -133,6 +163,7 @@ apply_blurpool(model)
 model.load_state_dict(get_ckpt(args.path)) # Since our models have a torch DDP wrapper, we modify keys to exclude first 7 chars. 
 model = model.cuda()
 model.eval()
+is_nested_model = args.mrl or args.bor_mrl or args.bor_block_mrl
 
 normalize = transforms.Normalize(mean=dataset_config['mean'], std=dataset_config['std'])
 test_transform = transforms.Compose([
@@ -167,7 +198,7 @@ if not args.retrieval:
 	dataloader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, num_workers=args.workers,
 			shuffle=False, worker_init_fn=seed_worker, generator=generator)
 
-	if args.mrl:
+	if is_nested_model:
 		_, top1_acc, top5_acc, total_time, num_images, m_score_dict, softmax_probs, gt, logits = evaluate_model(
 				model, dataloader, show_progress_bar=True, nesting_list=NESTING_LIST, tta=args.tta, imagenetA=args.dataset == 'A', imagenetR=args.dataset == 'R')
 	else:
@@ -176,7 +207,7 @@ if not args.retrieval:
 
 	tqdm.write('Evaluated {} images'.format(num_images))
 	confidence, predictions = torch.max(softmax_probs, dim=-1)
-	if args.mrl:
+	if is_nested_model:
 		metric_rows = []
 		for i, nesting in enumerate(NESTING_LIST):
 			metric_rows.append({
@@ -204,6 +235,11 @@ if not args.retrieval:
 		'dataset': args.dataset,
 		'checkpoint': args.path,
 		'mrl': bool(args.mrl),
+		'bor_mrl': bool(args.bor_mrl),
+		'bor_block_mrl': bool(args.bor_block_mrl),
+		'bor_mode': args.bor_mode,
+		'bor_orthogonal_map': args.bor_orthogonal_map,
+		'bor_use_trivialization': bool(args.bor_use_trivialization),
 		'efficient': bool(args.efficient),
 		'rep_size': int(args.rep_size),
 		'tta': bool(args.tta),
@@ -219,7 +255,7 @@ if not args.retrieval:
 
 	# saving torch tensor for model analysis... 
 	if args.save_logits or args.save_softmax or args.save_predictions:
-		save_string = f"mrl={args.mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
+		save_string = f"mrl={args.mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
 		if args.save_logits:
 			torch.save(logits, save_string+"_logits.pth")
 		if args.save_predictions:
