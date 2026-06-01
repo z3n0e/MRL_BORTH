@@ -1,6 +1,9 @@
 data:
-  in_memory: 1
+  dataset: imagenet
+  root: ""
   num_workers: 12
+  pin_memory: 1
+  prefetch_factor: 4
 dist:
   world_size: 8
 logging:
@@ -26,5 +29,5 @@ training:
   weight_decay: 0.0001
   use_blurpool: 1
 validation:
-  lr_tta: true
+  lr_tta: 1
   resolution: 256

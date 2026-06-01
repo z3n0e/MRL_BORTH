@@ -3,49 +3,34 @@
 Run these commands from the project root:
 
 ```bash
-cd /home/sricci/Desktop/MRL-main
+cd /home/sricci/Desktop/MRL_BORTH
 ```
 
-## 1. Prepare CIFAR-100 FFCV Files
-
-For the full deterministic workflow, you can run the all-in-one script:
+## 1. Run The Full CIFAR-100 Workflow
 
 ```bash
 ./run_cifar100_experiments.sh
 ```
 
-It trains and evaluates MRL, MRL-E, the full-feature baseline, and fixed-feature baselines on CIFAR-100. Results are written under `cifar100_runs/`, and `cifar100_results.ipynb` visualizes the outputs.
+The script trains and evaluates MRL, MRL-E, the full-feature baseline, and fixed-feature baselines on CIFAR-100. Results are written under `cifar100_runs/`, and `cifar100_results.ipynb` visualizes the outputs.
 
-Set the paths first:
-
-```bash
-cd train
-
-export CIFAR100_DIR=/path/to/cifar100/root
-export WRITE_DIR=/path/to/ffcv/output
-```
-
-Serialize CIFAR-100:
+The default CIFAR-100 data root is `$HOME/.cache/torchvision`. Override it with:
 
 ```bash
-./write_cifar100.sh
+CIFAR100_DIR=/path/to/cifar100/root ./run_cifar100_experiments.sh
 ```
 
-This creates:
-
-```text
-$WRITE_DIR/cifar100_train_32_raw.ffcv
-$WRITE_DIR/cifar100_val_32_raw.ffcv
-```
+TorchVision downloads CIFAR-100 automatically when it is missing.
 
 ## 2. Train MRL
 
 ```bash
+cd train
+
 python train_imagenet.py \
   --config-file rn50_configs/rn50_cifar100.yaml \
   --model.mrl=1 \
-  --data.train_dataset=$WRITE_DIR/cifar100_train_32_raw.ffcv \
-  --data.val_dataset=$WRITE_DIR/cifar100_val_32_raw.ffcv \
+  --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
 
@@ -57,8 +42,7 @@ MRL-E is the efficient version of MRL with one shared nested classifier.
 python train_imagenet.py \
   --config-file rn50_configs/rn50_cifar100.yaml \
   --model.efficient=1 \
-  --data.train_dataset=$WRITE_DIR/cifar100_train_32_raw.ffcv \
-  --data.val_dataset=$WRITE_DIR/cifar100_val_32_raw.ffcv \
+  --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
 
@@ -69,8 +53,7 @@ This is the standard 2048-dimensional ResNet classifier without MRL.
 ```bash
 python train_imagenet.py \
   --config-file rn50_configs/rn50_cifar100.yaml \
-  --data.train_dataset=$WRITE_DIR/cifar100_train_32_raw.ffcv \
-  --data.val_dataset=$WRITE_DIR/cifar100_val_32_raw.ffcv \
+  --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
 
@@ -82,8 +65,7 @@ Example with 512 feature dimensions:
 python train_imagenet.py \
   --config-file rn50_configs/rn50_cifar100.yaml \
   --model.fixed_feature=512 \
-  --data.train_dataset=$WRITE_DIR/cifar100_train_32_raw.ffcv \
-  --data.val_dataset=$WRITE_DIR/cifar100_val_32_raw.ffcv \
+  --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
 
@@ -145,5 +127,5 @@ python pytorch_inference.py \
 ## Notes
 
 - ImageNet remains the default dataset. CIFAR-100 is selected by the config file during training and by `--dataset CIFAR100` during inference.
-- The MRL method is unchanged; only the dataset metadata, class count, normalization, and data loading change for CIFAR-100.
+- The MRL method is unchanged; only dataset metadata, class count, normalization, and data loading change for CIFAR-100.
 - Training checkpoints are saved as `final_weights.pt` inside a run-specific folder under `trainlogs`.

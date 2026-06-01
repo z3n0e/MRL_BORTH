@@ -1,11 +1,12 @@
 '''
-This code is directly taken from FFCV-Imagenet https://github.com/libffcv/ffcv-imagenet 
-and modified for MRL purpose.
+ResNet training entry point modified for MRL.
 '''
 import sys 
 sys.path.append("../") # adding root folder to the path
 
 import torch as ch
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torch.cuda.amp import GradScaler
 from torch.cuda.amp import autocast
 import torch.nn.functional as F
@@ -14,7 +15,8 @@ ch.backends.cudnn.benchmark = True
 ch.autograd.profiler.emit_nvtx(False)
 ch.autograd.profiler.profile(False)
 
-from torchvision import models
+from torchvision import datasets, models
+from torchvision.transforms import v2
 import torchmetrics
 import numpy as np
 from tqdm import tqdm
@@ -24,7 +26,6 @@ import random
 import time
 import json
 from uuid import uuid4
-from typing import List
 from pathlib import Path
 from argparse import ArgumentParser
 
@@ -33,13 +34,6 @@ from fastargs.decorators import param
 from fastargs import Param, Section
 from fastargs.validation import And, OneOf
 
-from ffcv.pipeline.operation import Operation
-from ffcv.loader import Loader, OrderOption
-from ffcv.transforms import ToTensor, ToDevice, Squeeze, NormalizeImage, \
-    RandomHorizontalFlip, ToTorchImage
-from ffcv.fields.rgb_image import CenterCropRGBImageDecoder, \
-    RandomResizedCropRGBImageDecoder
-from ffcv.fields.basics import IntDecoder
 from MRL import *
 
 Section('model', 'model details').params(
@@ -59,11 +53,11 @@ Section('resolution', 'resolution scheduling').params(
 )
 
 Section('data', 'data related stuff').params(
-    dataset=Param(And(str, OneOf(['imagenet', 'cifar100'])), 'Dataset metadata to use for class count and normalization', default='imagenet'),
-    train_dataset=Param(str, '.dat file to use for training', required=True),
-    val_dataset=Param(str, '.dat file to use for validation', required=True),
-    num_workers=Param(int, 'The number of workers', required=True),
-    in_memory=Param(int, 'does the dataset fit in memory? (1/0)', required=True)
+    dataset=Param(And(str, OneOf(['imagenet', 'cifar100'])), 'Dataset to train on', default='imagenet'),
+    root=Param(str, 'Dataset root directory', default=''),
+    num_workers=Param(int, 'The number of dataloader workers', default=8),
+    pin_memory=Param(int, 'Pin dataloader memory? (1/0)', default=1),
+    prefetch_factor=Param(int, 'Batches prefetched by each worker', default=4)
 )
 
 Section('lr', 'lr scheduling').params(
@@ -107,23 +101,20 @@ Section('dist', 'distributed training options').params(
     port=Param(str, 'port', default='12355')
 )
 
-IMAGENET_MEAN = np.array([0.485, 0.456, 0.406]) * 255
-IMAGENET_STD = np.array([0.229, 0.224, 0.225]) * 255
-CIFAR100_MEAN = np.array([0.5071, 0.4867, 0.4408]) * 255
-CIFAR100_STD = np.array([0.2675, 0.2565, 0.2761]) * 255
-DEFAULT_CROP_RATIO = 224/256
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+CIFAR100_MEAN = (0.5071, 0.4867, 0.4408)
+CIFAR100_STD = (0.2675, 0.2565, 0.2761)
 DATASET_CONFIGS = {
     'imagenet': {
         'num_classes': 1000,
         'mean': IMAGENET_MEAN,
-        'std': IMAGENET_STD,
-        'val_crop_ratio': DEFAULT_CROP_RATIO
+        'std': IMAGENET_STD
     },
     'cifar100': {
         'num_classes': 100,
         'mean': CIFAR100_MEAN,
-        'std': CIFAR100_STD,
-        'val_crop_ratio': 1.0
+        'std': CIFAR100_STD
     }
 }
 
@@ -210,6 +201,7 @@ class ImageNetTrainer:
         self.dataset = dataset
         self.dataset_config = DATASET_CONFIGS[dataset]
         self.num_classes = self.dataset_config['num_classes']
+        self.device = ch.device(f'cuda:{gpu}')
         self.uid = str(uuid4())
 
 
@@ -293,100 +285,143 @@ class ImageNetTrainer:
             self.loss = ch.nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
 
-    @param('data.train_dataset')
+    def _dataset_root(self, root):
+        return Path(root).expanduser()
+
+    def _seed_worker(self, worker_id):
+        worker_seed = (self.seed + worker_id) % 2**32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+
+    def _make_loader(self, dataset, batch_size, num_workers, pin_memory,
+                     prefetch_factor, is_train, sampler, seed):
+        generator = ch.Generator()
+        generator.manual_seed(seed)
+
+        kwargs = {
+            'dataset': dataset,
+            'batch_size': batch_size,
+            'shuffle': is_train and sampler is None,
+            'sampler': sampler,
+            'num_workers': num_workers,
+            'pin_memory': bool(pin_memory),
+            'persistent_workers': num_workers > 0,
+            'drop_last': is_train,
+            'worker_init_fn': self._seed_worker,
+            'generator': generator
+        }
+        if num_workers > 0:
+            kwargs['prefetch_factor'] = prefetch_factor
+
+        return DataLoader(**kwargs)
+
+    def _cifar100_dataset(self, root, train, transform, distributed):
+        root = self._dataset_root(root)
+        if distributed and self.gpu != 0:
+            dist.barrier()
+        dataset = datasets.CIFAR100(root=str(root), train=train,
+                                    download=not distributed or self.gpu == 0,
+                                    transform=transform)
+        if distributed and self.gpu == 0:
+            dist.barrier()
+        return dataset
+
+    def _imagenet_dataset(self, root, split, transform):
+        split_root = self._dataset_root(root) / split
+        if not split_root.is_dir():
+            raise FileNotFoundError(
+                f'Expected ImageNet {split} directory at {split_root}. '
+                'Use a root with train/ and val/ subdirectories.'
+            )
+        return datasets.ImageFolder(split_root, transform=transform)
+
+    @param('data.root')
     @param('data.num_workers')
+    @param('data.pin_memory')
+    @param('data.prefetch_factor')
     @param('training.batch_size')
     @param('training.distributed')
-    @param('data.in_memory')
     @param('training.seed')
-    def create_train_loader(self, train_dataset, num_workers, batch_size,
-                            distributed, in_memory, seed):
-        this_device = f'cuda:{self.gpu}'
-        train_path = Path(train_dataset)
-        assert train_path.is_file()
-
+    def create_train_loader(self, root, num_workers, pin_memory, prefetch_factor,
+                            batch_size, distributed, seed):
         res = self.get_resolution(epoch=0)
-        self.decoder = RandomResizedCropRGBImageDecoder((res, res))
-        image_pipeline: List[Operation] = [
-            self.decoder,
-            RandomHorizontalFlip(),
-            ToTensor(),
-            ToDevice(ch.device(this_device), non_blocking=True),
-            ToTorchImage(),
-            NormalizeImage(self.dataset_config['mean'], self.dataset_config['std'], np.float16)
-        ]
+        self.train_resolution = res
 
-        label_pipeline: List[Operation] = [
-            IntDecoder(),
-            ToTensor(),
-            Squeeze(),
-            ToDevice(ch.device(this_device), non_blocking=True)
-        ]
+        if self.dataset == 'cifar100':
+            transform = v2.Compose([
+                v2.RandomCrop(32, padding=4),
+                v2.RandomHorizontalFlip(),
+                v2.ToImage(),
+                v2.ToDtype(ch.float32, scale=True),
+                v2.Normalize(CIFAR100_MEAN, CIFAR100_STD)
+            ])
+            dataset = self._cifar100_dataset(root, train=True, transform=transform,
+                                             distributed=distributed)
+        else:
+            transform = v2.Compose([
+                v2.RandomResizedCrop(res),
+                v2.RandomHorizontalFlip(),
+                v2.ToImage(),
+                v2.ToDtype(ch.float32, scale=True),
+                v2.Normalize(IMAGENET_MEAN, IMAGENET_STD)
+            ])
+            dataset = self._imagenet_dataset(root, 'train', transform)
 
-        order = OrderOption.RANDOM if distributed else OrderOption.QUASI_RANDOM
-        loader = Loader(train_dataset,
-                        batch_size=batch_size,
-                        num_workers=num_workers,
-                        order=order,
-                        os_cache=in_memory,
-                        drop_last=True,
-                        pipelines={
-                            'image': image_pipeline,
-                            'label': label_pipeline
-                        },
-                        distributed=distributed,
-                        seed=seed)
+        sampler = DistributedSampler(dataset, shuffle=True, seed=seed) if distributed else None
+        self.train_sampler = sampler
+        return self._make_loader(dataset, batch_size, num_workers, pin_memory,
+                                 prefetch_factor, is_train=True, sampler=sampler,
+                                 seed=seed)
 
-        return loader
-
-    @param('data.val_dataset')
+    @param('data.root')
     @param('data.num_workers')
+    @param('data.pin_memory')
+    @param('data.prefetch_factor')
     @param('validation.batch_size')
     @param('validation.resolution')
     @param('training.distributed')
     @param('training.seed')
-    def create_val_loader(self, val_dataset, num_workers, batch_size,
-                          resolution, distributed, seed):
-        this_device = f'cuda:{self.gpu}'
-        val_path = Path(val_dataset)
-        assert val_path.is_file()
-        res_tuple = (resolution, resolution)
-        cropper = CenterCropRGBImageDecoder(res_tuple, ratio=self.dataset_config['val_crop_ratio'])
-        image_pipeline = [
-            cropper,
-            ToTensor(),
-            ToDevice(ch.device(this_device), non_blocking=True),
-            ToTorchImage(),
-            NormalizeImage(self.dataset_config['mean'], self.dataset_config['std'], np.float16)
-        ]
+    def create_val_loader(self, root, num_workers, pin_memory, prefetch_factor,
+                          batch_size, resolution, distributed, seed):
+        if self.dataset == 'cifar100':
+            transforms = []
+            if resolution != 32:
+                transforms.extend([
+                    v2.Resize(resolution),
+                    v2.CenterCrop(resolution)
+                ])
+            transforms.extend([
+                v2.ToImage(),
+                v2.ToDtype(ch.float32, scale=True),
+                v2.Normalize(CIFAR100_MEAN, CIFAR100_STD)
+            ])
+            dataset = self._cifar100_dataset(root, train=False,
+                                             transform=v2.Compose(transforms),
+                                             distributed=distributed)
+        else:
+            resize_size = int(resolution / 0.875)
+            transform = v2.Compose([
+                v2.Resize(resize_size),
+                v2.CenterCrop(resolution),
+                v2.ToImage(),
+                v2.ToDtype(ch.float32, scale=True),
+                v2.Normalize(IMAGENET_MEAN, IMAGENET_STD)
+            ])
+            dataset = self._imagenet_dataset(root, 'val', transform)
 
-        label_pipeline = [
-            IntDecoder(),
-            ToTensor(),
-            Squeeze(),
-            ToDevice(ch.device(this_device),
-            non_blocking=True)
-        ]
-
-        loader = Loader(val_dataset,
-                        batch_size=batch_size,
-                        num_workers=num_workers,
-                        order=OrderOption.SEQUENTIAL,
-                        drop_last=False,
-                        pipelines={
-                            'image': image_pipeline,
-                            'label': label_pipeline
-                        },
-                        distributed=distributed,
-                        seed=seed)
-        return loader
+        sampler = DistributedSampler(dataset, shuffle=False, seed=seed) if distributed else None
+        self.val_sampler = sampler
+        return self._make_loader(dataset, batch_size, num_workers, pin_memory,
+                                 prefetch_factor, is_train=False, sampler=sampler,
+                                 seed=seed)
 
     @param('training.epochs')
     @param('logging.log_level')
     def train(self, epochs, log_level):
         for epoch in range(epochs):
-            res = self.get_resolution(epoch)
-            self.decoder.output_size = (res, res)
+            # TODO: Dynamic resolution scheduling with TorchVision requires
+            # rebuilding the train transform/loader per epoch. Training uses
+            # the initial get_resolution(epoch=0) value for now.
             train_loss = self.train_loop(epoch)
 
             if log_level > 0:
@@ -433,7 +468,7 @@ class ImageNetTrainer:
         If we do not want to use MRL, we just keep both the efficient and mrl flags to 0
         If we want a fixed feature baseline, then we just change fixed_feature={Rep. Size of your choice}
 
-        NOTE: FFCV Uses Blurpool. 
+        NOTE: Blurpool follows the original training recipe.
         '''
 
         scaler = GradScaler()
@@ -458,7 +493,7 @@ class ImageNetTrainer:
         if use_blurpool: apply_blurpool(model)
 
         model = model.to(memory_format=ch.channels_last)
-        model = model.to(self.gpu)
+        model = model.to(self.device)
 
         if distributed:
             model = ch.nn.parallel.DistributedDataParallel(model, device_ids=[self.gpu])
@@ -470,6 +505,8 @@ class ImageNetTrainer:
         model = self.model
         model.train()
         losses = []
+        if self.train_sampler is not None:
+            self.train_sampler.set_epoch(epoch)
 
         lr_start, lr_end = self.get_lr(epoch), self.get_lr(epoch + 1)
         iters = len(self.train_loader)
@@ -480,6 +517,10 @@ class ImageNetTrainer:
             ### Training start
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = lrs[ix]
+
+            images = images.to(self.device, non_blocking=True)
+            target = target.to(self.device, non_blocking=True)
+            images = images.contiguous(memory_format=ch.channels_last)
 
             self.optimizer.zero_grad(set_to_none=True)
             with autocast():
@@ -522,6 +563,10 @@ class ImageNetTrainer:
         with ch.no_grad():
             with autocast():
                 for images, target in tqdm(self.val_loader):
+                    images = images.to(self.device, non_blocking=True)
+                    target = target.to(self.device, non_blocking=True)
+                    images = images.contiguous(memory_format=ch.channels_last)
+
                     output = self.model(images)
                     if lr_tta:
                         output += self.model(ch.flip(images, dims=[3]))
@@ -548,10 +593,14 @@ class ImageNetTrainer:
         with ch.no_grad():
             with autocast():
                 for images, target in tqdm(self.val_loader):
-                    output = self.model(images); output=torch.stack(output, dim=0)
+                    images = images.to(self.device, non_blocking=True)
+                    target = target.to(self.device, non_blocking=True)
+                    images = images.contiguous(memory_format=ch.channels_last)
+
+                    output = self.model(images); output=ch.stack(output, dim=0)
 
                     if lr_tta:
-                        output +=torch.stack(self.model(ch.flip(images, dims=[3])), dim=0) # Just one augmentation.
+                        output += ch.stack(self.model(ch.flip(images, dims=[3])), dim=0) # Just one augmentation.
 
                     # Logging the accuracies top1/5 for each of nesting...
                     for i in range(len(self.nesting_list)):
@@ -574,18 +623,18 @@ class ImageNetTrainer:
         if self.nesting:
             self.val_meters={}
             for i in self.nesting_list:
-                self.val_meters['top_1_{}'.format(i)] = torchmetrics.Accuracy(compute_on_step=False).to(self.gpu)
+                self.val_meters['top_1_{}'.format(i)] = torchmetrics.Accuracy(compute_on_step=False).to(self.device)
 
             for i in self.nesting_list:
-                self.val_meters['top_5_{}'.format(i)] = torchmetrics.Accuracy(compute_on_step=False, top_k=5).to(self.gpu)
+                self.val_meters['top_5_{}'.format(i)] = torchmetrics.Accuracy(compute_on_step=False, top_k=5).to(self.device)
 
-            self.val_meters['loss'] = MeanScalarMetric(compute_on_step=False).to(self.gpu)
+            self.val_meters['loss'] = MeanScalarMetric(compute_on_step=False).to(self.device)
 
         else:   
             self.val_meters = {
-                'top_1': torchmetrics.Accuracy(compute_on_step=False).to(self.gpu),
-                'top_5': torchmetrics.Accuracy(compute_on_step=False, top_k=5).to(self.gpu),
-                'loss': MeanScalarMetric(compute_on_step=False).to(self.gpu)
+                'top_1': torchmetrics.Accuracy(compute_on_step=False).to(self.device),
+                'top_5': torchmetrics.Accuracy(compute_on_step=False, top_k=5).to(self.device),
+                'loss': MeanScalarMetric(compute_on_step=False).to(self.device)
             }
 
         if self.gpu == 0:

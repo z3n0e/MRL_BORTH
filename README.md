@@ -7,7 +7,7 @@ Learned representations are used in multiple downstream tasks like web-scale sea
 <img src="./images/mrl-teaser.jpeg" width="512"/>
 </p>
 
-This repository contains code to train, evaluate, and analyze Matryoshka Representations with a ResNet50 backbone. The training pipeline utilizes efficient [FFCV](https://github.com/libffcv/ffcv-imagenet) dataloaders modified for MRL. The repository is organized as follows:
+This repository contains code to train, evaluate, and analyze Matryoshka Representations with a ResNet50 backbone. The training pipeline uses standard PyTorch and TorchVision dataloaders while keeping the MRL method in `MRL.py` unchanged. The repository is organized as follows:
 
 1. Set up
 2. Matryoshka Linear Layer
@@ -24,23 +24,22 @@ pip3 install -r requirements.txt
 ```
 
 ### Preparing the Dataset
-Following the ImageNet training pipeline of [FFCV](https://github.com/libffcv/ffcv-imagenet) for ResNet50, generate the dataset with the following command (`IMAGENET_DIR` should point to a PyTorch style [ImageNet dataset](https://github.com/MadryLab/pytorch-imagenet-dataset)):
+ImageNet training expects the standard TorchVision `ImageFolder` layout:
 
-```bash
-# Required environmental variables for the script:
-cd train/
-export IMAGENET_DIR=/path/to/pytorch/format/imagenet/directory/
-export WRITE_DIR=/your/path/here/
-
-# Serialize images with:
-# - 500px side length maximum
-# - 50% JPEG encoded, 90% raw pixel values
-# - quality=90 JPEGs
-./write_imagenet.sh 500 0.50 90
+```text
+imagenet/
+  train/
+    class_1/
+    class_2/
+    ...
+  val/
+    class_1/
+    class_2/
+    ...
 ```
-Note that we prepare the dataset with the following FFCV configuration:
-* ResNet-50 training: 50% JPEG 500px side length (*train_500_0.50_90.ffcv*)
-* ResNet-50 evaluation: 0% JPEG 500px side length (*val_500_uncompressed.ffcv*)
+
+CIFAR-100 uses `torchvision.datasets.CIFAR100` and downloads automatically when needed. Pass the dataset root with `--data.root=/path/to/data/root`.
+
 ## Matryoshka Linear Layer
 We make only a minor modification to the ResNet50 architecture via the MRL linear layer, defined in `MRL.py`, which can be instantiated as:
 ```
@@ -54,17 +53,16 @@ Where `nesting_list` is the list of representation sizes we wish to train on, `n
 <img src="./images/mrl-r50-accuracy.jpeg" width="784"/>
 </p>
 
-We use PyTorch Distributed Data Parallel shared over 2 A100 GPUs and FFCV dataloaders. FFCV utilizes 8 A100 GPUs, therefore we linearly downscale the learning rate by 4 to compensate. We utilize the `rn50_40_epochs.yaml` configuration file provided by FFCV to train MRL ResNet50 models for 40 epochs.
-While training, we dump  model ckpts and training logs by default. `$WRITE_DIR` is same variable used to create the dataset. 
+We use PyTorch Distributed Data Parallel with TorchVision dataloaders. The `rn50_40_epochs.yaml` configuration trains ImageNet ResNet50 models for 40 epochs. While training, we dump model checkpoints and training logs by default.
 
 ### Training Fixed Feature Baseline
 
 ```bash 
 export CUDA_VISIBLE_DEVICES=0,1
+export IMAGENET_DIR=/path/to/imagenet
 
 python train_imagenet.py --config-file rn50_configs/rn50_40_epochs.yaml --model.fixed_feature=2048 \
---data.train_dataset=$WRITE_DIR/train_500_0.50_90.ffcv --data.val_dataset=$WRITE_DIR/val_500_uncompressed.ffcv \
---data.num_workers=12 --data.in_memory=1 --logging.folder=trainlogs --logging.log_level=1 \
+--data.root=$IMAGENET_DIR --data.num_workers=12 --logging.folder=trainlogs --logging.log_level=1 \
 --dist.world_size=2 --training.distributed=1 --lr.lr=0.425
 ```
 
@@ -72,10 +70,10 @@ python train_imagenet.py --config-file rn50_configs/rn50_40_epochs.yaml --model.
 
 ```bash 
 export CUDA_VISIBLE_DEVICES=0,1
+export IMAGENET_DIR=/path/to/imagenet
 
 python train_imagenet.py --config-file rn50_configs/rn50_40_epochs.yaml --model.mrl=1 \
---data.train_dataset=$WRITE_DIR/train_500_0.50_90.ffcv --data.val_dataset=$WRITE_DIR/val_500_uncompressed.ffcv \
---data.num_workers=12 --data.in_memory=1 --logging.folder=trainlogs --logging.log_level=1 \
+--data.root=$IMAGENET_DIR --data.num_workers=12 --logging.folder=trainlogs --logging.log_level=1 \
 --dist.world_size=2 --training.distributed=1 --lr.lr=0.425
 ```
 
@@ -83,10 +81,10 @@ python train_imagenet.py --config-file rn50_configs/rn50_40_epochs.yaml --model.
 
 ```bash 
 export CUDA_VISIBLE_DEVICES=0,1
+export IMAGENET_DIR=/path/to/imagenet
 
 python train_imagenet.py --config-file rn50_configs/rn50_40_epochs.yaml --model.efficient=1 \
---data.train_dataset=$WRITE_DIR/train_500_0.50_90.ffcv --data.val_dataset=$WRITE_DIR/val_500_uncompressed.ffcv \
---data.num_workers=12 --data.in_memory=1 --logging.folder=trainlogs --logging.log_level=1 \
+--data.root=$IMAGENET_DIR --data.num_workers=12 --logging.folder=trainlogs --logging.log_level=1 \
 --dist.world_size=2 --training.distributed=1 --lr.lr=0.425
 ```
 

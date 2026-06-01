@@ -4,7 +4,7 @@
 
 This repository implements Matryoshka Representation Learning (MRL) for image classification and retrieval, centered on a ResNet-50 backbone. The key idea is to train one representation so that multiple prefixes of the feature vector, such as 8, 16, 32, ..., 2048 dimensions, are independently useful. At inference time, the same model can be evaluated at different representation sizes to trade accuracy for compute.
 
-The original project is ImageNet-oriented, with FFCV-based training, PyTorch inference scripts, analysis notebooks, and retrieval notebooks. This version also supports CIFAR-100 as a smaller 100-class dataset while keeping ImageNet as the default behavior.
+The original project is ImageNet-oriented, with PyTorch inference scripts, analysis notebooks, and retrieval notebooks. This version also supports CIFAR-100 as a smaller 100-class dataset while keeping ImageNet as the default behavior. Training now uses standard PyTorch and TorchVision dataloaders.
 
 ## Core Method
 
@@ -14,18 +14,15 @@ The original project is ImageNet-oriented, with FFCV-based training, PyTorch inf
 - `MRL_Linear_Layer` replaces the standard final classifier with classifiers over nested feature dimensions. In normal MRL mode it creates one head per nesting size. In efficient MRL-E mode it uses one shared classifier and slices its weights for each feature prefix.
 - `FixedFeatureLayer` is the fixed-representation baseline. It classifies using only the first `in_features` dimensions of the backbone representation.
 
-The method itself is unchanged for CIFAR-100. The dataset change only affects class count, normalization, data serialization, and evaluation dataset loading.
+The method itself is unchanged for CIFAR-100. The dataset change only affects class count, normalization, and dataset loading.
 
 ## Training Pipeline
 
 Training code lives in `train/`.
 
-- `train/write_imagenet.py` serializes datasets into FFCV format. It supports ImageNet, CIFAR-10 compatibility through the existing `cifar` option, and now CIFAR-100 through `--cfg.dataset=cifar100`.
-- `train/write_imagenet.sh` is the original ImageNet serialization helper.
-- `train/write_cifar100.sh` is a new CIFAR-100 helper that writes train and validation/test FFCV files using raw 32x32 images.
-- `train/train_imagenet.py` is the main FFCV training entry point. It builds loaders, creates the ResNet model, swaps in the MRL or fixed-feature head, trains with SGD and AMP, evaluates top-1/top-5 accuracy, and writes logs/checkpoints.
+- `train/train_imagenet.py` is the main training entry point. It builds TorchVision datasets and PyTorch dataloaders, creates the ResNet model, swaps in the MRL or fixed-feature head, trains with SGD and AMP, evaluates top-1/top-5 accuracy, and writes logs/checkpoints.
 - `train/rn50_configs/rn50_40_epochs.yaml` is the original ImageNet ResNet-50 configuration.
-- `train/rn50_configs/rn50_cifar100.yaml` is the new CIFAR-100 ResNet-50 configuration.
+- `train/rn50_configs/rn50_cifar100.yaml` is the CIFAR-100 ResNet-50 configuration.
 - `run_cifar100_experiments.sh` is an all-in-one deterministic CIFAR-100 runner for training and evaluation.
 - `cifar100_results.ipynb` visualizes CIFAR-100 training logs and evaluation metrics.
 
@@ -33,41 +30,36 @@ The new training flag is:
 
 ```bash
 --data.dataset=cifar100
+--data.root=/path/to/dataset/root
 ```
 
 When this flag is used, training switches to:
 
 - 100 output classes
 - CIFAR-100 mean and standard deviation
-- validation crop ratio `1.0`, appropriate for 32x32 images
+- TorchVision CIFAR-100 train/test datasets
 
-When the flag is omitted, the trainer still uses ImageNet defaults: 1000 classes, ImageNet normalization, and the original crop ratio.
+When the flag is omitted, the trainer still uses ImageNet defaults: 1000 classes, ImageNet normalization, and `ImageFolder` datasets under `data.root/train` and `data.root/val`.
 
 ## CIFAR-100 Usage
 
-From `train/`, serialize CIFAR-100:
+From the project root, run the deterministic CIFAR-100 workflow:
 
 ```bash
-export CIFAR100_DIR=/path/to/cifar100/root
-export WRITE_DIR=/path/to/ffcv/output
-./write_cifar100.sh
+CIFAR100_DIR=/path/to/cifar100/root ./run_cifar100_experiments.sh
 ```
 
-This creates:
-
-```text
-$WRITE_DIR/cifar100_train_32_raw.ffcv
-$WRITE_DIR/cifar100_val_32_raw.ffcv
-```
+TorchVision downloads CIFAR-100 automatically when it is missing.
 
 Train an MRL model:
 
 ```bash
+cd train
+
 python train_imagenet.py \
   --config-file rn50_configs/rn50_cifar100.yaml \
   --model.mrl=1 \
-  --data.train_dataset=$WRITE_DIR/cifar100_train_32_raw.ffcv \
-  --data.val_dataset=$WRITE_DIR/cifar100_val_32_raw.ffcv \
+  --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
 
@@ -154,7 +146,7 @@ Most analysis notebooks are ImageNet-specific because they rely on WordNet and I
 - custom classifier output class counts, including the 100-class CIFAR-100 case
 - equality with the original loop-based implementation
 
-The tests focus on method correctness rather than end-to-end FFCV training.
+The tests focus on method correctness rather than end-to-end training.
 
 ## Data And Behavior Notes
 
@@ -166,13 +158,13 @@ CIFAR-100 support is intentionally narrow and method-preserving:
 - no change to nesting dimensions
 - no change to MRL versus MRL-E semantics
 - no change to fixed-feature semantics
-- only dataset-specific metadata and loaders are changed
+- only dataset-specific metadata, normalization, and loaders are changed
 
 This makes CIFAR-100 a smaller-scale experimental substitute for ImageNet without changing what the MRL method is optimizing.
 
 ## Reproducibility
 
-CIFAR-100 experiments are configured for deterministic runs through `training.seed` and `training.deterministic`. The runner script exports `PYTHONHASHSEED`, sets CUDA deterministic workspace configuration, and passes the same seed to training and evaluation. The trainer seeds Python, NumPy, PyTorch, CUDA, and FFCV loaders.
+CIFAR-100 experiments are configured for deterministic runs through `training.seed` and `training.deterministic`. The runner script exports `PYTHONHASHSEED`, sets CUDA deterministic workspace configuration, and passes the same seed to training and evaluation. The trainer seeds Python, NumPy, PyTorch, CUDA, and dataloader workers.
 
 Example:
 

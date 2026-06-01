@@ -1,7 +1,9 @@
 data:
   dataset: cifar100
-  in_memory: 1
+  root: ""
   num_workers: 4
+  pin_memory: 1
+  prefetch_factor: 4
 dist:
   world_size: 1
 logging:
@@ -30,5 +32,5 @@ training:
   use_blurpool: 1
 validation:
   batch_size: 256
-  lr_tta: true
+  lr_tta: 1
   resolution: 32

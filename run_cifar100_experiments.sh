@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -12,7 +16,6 @@ export CUBLAS_WORKSPACE_CONFIG=${CUBLAS_WORKSPACE_CONFIG:-:4096:8}
 
 # Data/output locations.
 CIFAR100_DIR=${CIFAR100_DIR:-"$HOME/.cache/torchvision"}
-FFCV_DIR=${FFCV_DIR:-"$ROOT_DIR/data/ffcv/cifar100"}
 EXPERIMENT_DIR=${EXPERIMENT_DIR:-"$ROOT_DIR/cifar100_runs/cifar100_seed_${SEED}_$(date +%Y%m%d_%H%M%S)"}
 
 # Training knobs.
@@ -29,26 +32,15 @@ RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-1}
 RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-1}
 FIXED_FEATURE_DIMS=${FIXED_FEATURE_DIMS:-512}
 
-TRAIN_FFCV="$FFCV_DIR/cifar100_train_32_raw.ffcv"
-VAL_FFCV="$FFCV_DIR/cifar100_val_32_raw.ffcv"
 TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
 EVAL_DIR="$EXPERIMENT_DIR/eval"
 
-mkdir -p "$FFCV_DIR" "$TRAINLOG_DIR" "$EVAL_DIR"
+mkdir -p "$CIFAR100_DIR" "$TRAINLOG_DIR" "$EVAL_DIR"
 
 echo "CIFAR-100 experiment directory: $EXPERIMENT_DIR"
 echo "Seed: $SEED"
 echo "Deterministic: $DETERMINISTIC"
-
-if [[ ! -f "$TRAIN_FFCV" || ! -f "$VAL_FFCV" ]]; then
-    echo "Serializing CIFAR-100 into FFCV files..."
-    (
-        cd "$ROOT_DIR/train"
-        CIFAR100_DIR="$CIFAR100_DIR" WRITE_DIR="$FFCV_DIR" ./write_cifar100.sh
-    )
-else
-    echo "Found existing FFCV files in $FFCV_DIR"
-fi
+echo "CIFAR-100 data root: $CIFAR100_DIR"
 
 write_manifest() {
     {
@@ -56,7 +48,6 @@ write_manifest() {
         echo "seed=$SEED"
         echo "deterministic=$DETERMINISTIC"
         echo "cifar100_dir=$CIFAR100_DIR"
-        echo "ffcv_dir=$FFCV_DIR"
         echo "epochs=$EPOCHS"
         echo "train_batch_size=$TRAIN_BATCH_SIZE"
         echo "val_batch_size=$VAL_BATCH_SIZE"
@@ -82,8 +73,7 @@ train_run() {
         cd "$ROOT_DIR/train"
         python train_imagenet.py \
             --config-file rn50_configs/rn50_cifar100.yaml \
-            --data.train_dataset="$TRAIN_FFCV" \
-            --data.val_dataset="$VAL_FFCV" \
+            --data.root="$CIFAR100_DIR" \
             --data.num_workers="$NUM_WORKERS" \
             --training.batch_size="$TRAIN_BATCH_SIZE" \
             --training.epochs="$EPOCHS" \
