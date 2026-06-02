@@ -4,6 +4,8 @@ ResNet training entry point modified for MRL.
 import sys 
 sys.path.append("../") # adding root folder to the path
 
+import multiprocessing as mp
+import os
 import torch as ch
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -21,7 +23,6 @@ import torchmetrics
 import numpy as np
 from tqdm import tqdm
 
-import os
 import random
 import time
 import json
@@ -35,6 +36,26 @@ from fastargs import Param, Section
 from fastargs.validation import And, OneOf
 
 from MRL import *
+
+def configure_multiprocessing_start_method():
+    if sys.version_info < (3, 14) or os.name != 'posix' or sys.platform == 'darwin':
+        return
+
+    start_method = os.environ.get('MRL_MULTIPROCESSING_START_METHOD', 'fork')
+    if not start_method:
+        return
+    if start_method not in mp.get_all_start_methods():
+        raise ValueError(
+            f"Unsupported MRL_MULTIPROCESSING_START_METHOD={start_method!r}. "
+            f"Available methods: {mp.get_all_start_methods()}"
+        )
+
+    current = mp.get_start_method(allow_none=True)
+    if current != start_method:
+        mp.set_start_method(start_method, force=True)
+
+
+configure_multiprocessing_start_method()
 
 Section('model', 'model details').params(
     arch=Param(And(str, OneOf(models.__dir__())), default='resnet18'),

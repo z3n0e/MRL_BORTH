@@ -5,6 +5,7 @@ import sys
 sys.path.append("../") # adding root folder to the path
 
 import json
+import multiprocessing as mp
 import os
 import random
 import torch 
@@ -18,6 +19,26 @@ from pathlib import Path
 from MRL import *
 from argparse import ArgumentParser
 from utils import *
+
+def configure_multiprocessing_start_method():
+	if sys.version_info < (3, 14) or os.name != 'posix' or sys.platform == 'darwin':
+		return
+
+	start_method = os.environ.get('MRL_MULTIPROCESSING_START_METHOD', 'fork')
+	if not start_method:
+		return
+	if start_method not in mp.get_all_start_methods():
+		raise ValueError(
+			f"Unsupported MRL_MULTIPROCESSING_START_METHOD={start_method!r}. "
+			f"Available methods: {mp.get_all_start_methods()}"
+		)
+
+	current = mp.get_start_method(allow_none=True)
+	if current != start_method:
+		mp.set_start_method(start_method, force=True)
+
+
+configure_multiprocessing_start_method()
 
 try:
 	from imagenetv2_pytorch import ImageNetV2Dataset
