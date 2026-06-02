@@ -45,7 +45,7 @@ Section('model', 'model details').params(
     fixed_feature=Param(int, 'In case we want to do the fixed feature training, by default it is 2048', default=2048),
     bor_mrl=Param(int, 'Use recursive-prefix Block-Orthogonal Residual MRL? (1/0)', default=0),
     bor_block_mrl=Param(int, 'Use independent-block Block-Orthogonal Residual MRL? (1/0)', default=0),
-    bor_mode=Param(And(str, OneOf(['identity', 'orthogonal'])), 'BOR block transform mode', default='orthogonal'),
+    bor_mode=Param(And(str, OneOf(['orthogonal', 'frozen'])), 'BOR block transform mode', default='orthogonal'),
     bor_orthogonal_map=Param(And(str, OneOf(['matrix_exp', 'cayley', 'householder'])), 'BOR orthogonal parametrization map', default='matrix_exp'),
     bor_use_trivialization=Param(int, 'Use dynamic trivialization for BOR orthogonal maps? (1/0)', default=1)
 )

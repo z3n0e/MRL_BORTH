@@ -88,13 +88,13 @@ python train_imagenet.py \
   --logging.folder=trainlogs
 ```
 
-## 7. Train BOR-MRL Identity Ablation
+## 7. Train BOR-MRL Frozen Ablation
 
 ```bash
-python train_imagenet.py \
+  python train_imagenet.py \
   --config-file rn50_configs/rn50_cifar100.yaml \
   --model.bor_mrl=1 \
-  --model.bor_mode=identity \
+  --model.bor_mode=frozen \
   --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
@@ -154,7 +154,7 @@ python pytorch_inference.py \
   --bor_orthogonal_map matrix_exp
 ```
 
-For identity, pass `--bor_mode identity`. For Cayley or Householder, pass the matching `--bor_orthogonal_map`.
+For frozen orthogonal transforms, pass `--bor_mode frozen`. For Cayley or Householder, pass the matching `--bor_orthogonal_map`.
 
 To evaluate the independent-block variant, replace `--bor_mrl` with `--bor_block_mrl`.
 
@@ -244,6 +244,8 @@ python compute_metrics.py \
 ```
 
 For MRL-E use `--model mrl_e`. For fixed-feature checkpoints, pass `--rep_size <dim>` while dumping arrays and use `--model ff --rep-size <dim>` for the retrieval scripts.
+
+To visualize a completed retrieval run, open `cifar100_retrieval_results.ipynb` and set `EXPERIMENT_DIR` to the run folder if you do not want it to auto-select the latest retrieval run.
 
 ## Notes
 

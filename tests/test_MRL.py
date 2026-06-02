@@ -130,7 +130,7 @@ def test_block_orthogonal_layer_shapes():
 	nesting_list = [8, 16, 32]
 	x = torch.randn(4, 32)
 
-	for mode in ("identity", "orthogonal"):
+	for mode in ("frozen", "orthogonal"):
 		layer = BlockOrthogonalLayer(
 			nesting_list,
 			mode=mode,
@@ -169,6 +169,20 @@ def test_parametrized_blocks_are_orthogonal():
 		eye = torch.eye(weight.shape[0], device=weight.device, dtype=weight.dtype)
 		assert torch.allclose(weight @ weight.t(), eye, atol=1e-4, rtol=1e-4)
 		assert torch.allclose(weight.t() @ weight, eye, atol=1e-4, rtol=1e-4)
+
+
+def test_frozen_blocks_are_orthogonal_and_not_trainable():
+	layer = BlockOrthogonalLayer(
+		[8, 16, 32],
+		mode="frozen",
+		orthogonal_map="matrix_exp",
+	)
+	for block in layer.blocks:
+		weight = block.weight
+		eye = torch.eye(weight.shape[0], device=weight.device, dtype=weight.dtype)
+		assert torch.allclose(weight @ weight.t(), eye, atol=1e-4, rtol=1e-4)
+		assert torch.allclose(weight.t() @ weight, eye, atol=1e-4, rtol=1e-4)
+		assert not weight.requires_grad
 
 
 def test_bor_mrl_head_output_shapes():
@@ -320,18 +334,28 @@ def test_retrieval_metrics_accept_column_labels():
 	assert metrics["recall"] == pytest.approx(((1 / 2) + (1 / 3) + 1) / 3)
 
 
-def test_bor_identity_matches_prefix_slicing_shape():
+def test_bor_frozen_uses_nontrainable_orthogonal_prefix_layers():
 	head = BlockOrthogonalResidualMRLHead(
 		[8, 16, 32],
 		num_classes=10,
-		mode="identity",
+		mode="frozen",
 	)
 	x = torch.randn(5, 32)
 	output = head(x)
-	assert torch.allclose(head.last_prefixes[0], x[:, :8])
-	assert torch.allclose(head.last_prefixes[1], x[:, :16])
-	assert torch.allclose(head.last_prefixes[2], x[:, :32])
+	for layer in head.prefix_orthogonal_layers:
+		weight = layer.weight
+		eye = torch.eye(weight.shape[0], device=weight.device, dtype=weight.dtype)
+		assert torch.allclose(weight @ weight.t(), eye, atol=1e-4, rtol=1e-4)
+		assert torch.allclose(weight.t() @ weight, eye, atol=1e-4, rtol=1e-4)
+		assert not weight.requires_grad
 	assert [block.shape[1] for block in head.last_blocks] == [8, 8, 16]
 	assert len(output) == 3
 	for logits in output:
 		assert logits.shape == (5, 10)
+
+
+def test_identity_mode_is_not_supported():
+	with pytest.raises(ValueError):
+		BlockOrthogonalLayer([8, 16, 32], mode="identity")
+	with pytest.raises(ValueError):
+		BlockOrthogonalResidualMRLHead([8, 16, 32], num_classes=10, mode="identity")

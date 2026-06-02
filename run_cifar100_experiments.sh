@@ -32,7 +32,7 @@ RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-1}
 RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-1}
 RUN_BOR_MRL=${RUN_BOR_MRL:-1}
 RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-1}
-RUN_BOR_MRL_IDENTITY=${RUN_BOR_MRL_IDENTITY:-1}
+RUN_BOR_MRL_FROZEN=${RUN_BOR_MRL_FROZEN:-1}
 RUN_BOR_MRL_CAYLEY=${RUN_BOR_MRL_CAYLEY:-1}
 RUN_BOR_MRL_HOUSEHOLDER=${RUN_BOR_MRL_HOUSEHOLDER:-1}
 FIXED_FEATURE_DIMS=${FIXED_FEATURE_DIMS:-512}
@@ -70,7 +70,7 @@ write_manifest() {
         echo "run_fixed_feature=$RUN_FIXED_FEATURE"
         echo "run_bor_mrl=$RUN_BOR_MRL"
         echo "run_bor_block_mrl=$RUN_BOR_BLOCK_MRL"
-        echo "run_bor_mrl_identity=$RUN_BOR_MRL_IDENTITY"
+        echo "run_bor_mrl_frozen=$RUN_BOR_MRL_FROZEN"
         echo "run_bor_mrl_cayley=$RUN_BOR_MRL_CAYLEY"
         echo "run_bor_mrl_householder=$RUN_BOR_MRL_HOUSEHOLDER"
         echo "bor_orthogonal_map=$BOR_ORTHOGONAL_MAP"
@@ -186,13 +186,13 @@ if [[ "$RUN_BOR_BLOCK_MRL" == "1" ]]; then
         --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
 fi
 
-if [[ "$RUN_BOR_MRL_IDENTITY" == "1" ]]; then
-    train_run bor_mrl_identity \
+if [[ "$RUN_BOR_MRL_FROZEN" == "1" ]]; then
+    train_run bor_mrl_frozen \
         --model.bor_mrl=1 \
-        --model.bor_mode=identity
-    eval_run bor_mrl_identity \
+        --model.bor_mode=frozen
+    eval_run bor_mrl_frozen \
         --bor_mrl \
-        --bor_mode identity
+        --bor_mode frozen
 fi
 
 if [[ "$RUN_BOR_MRL_CAYLEY" == "1" ]]; then

@@ -49,7 +49,7 @@ The project now supports these training variants:
 - MRL-E
 - Full-feature baseline
 - Fixed-feature baseline
-- BOR-MRL identity
+- BOR-MRL frozen
 - BOR-MRL matrix_exp
 - BOR-MRL cayley
 - BOR-MRL householder

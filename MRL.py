@@ -52,7 +52,7 @@ class BlockOrthogonalLayer(nn.Module):
 	def __init__(self, nesting_list, mode="orthogonal",
 	             orthogonal_map="matrix_exp", use_trivialization=True):
 		super().__init__()
-		allowed_modes = {"identity", "orthogonal"}
+		allowed_modes = {"orthogonal", "frozen"}
 		allowed_maps = {"matrix_exp", "cayley", "householder"}
 		if mode not in allowed_modes:
 			raise ValueError(f"mode must be one of {sorted(allowed_modes)}, got {mode!r}")
@@ -67,29 +67,33 @@ class BlockOrthogonalLayer(nn.Module):
 		self.total_dim = self.nesting_list[-1]
 
 		self.blocks = nn.ModuleList()
-		if self.mode == "orthogonal":
-			if orthogonal is None:
+		if self.mode in {"orthogonal", "frozen"}:
+			if self.mode == "orthogonal" and orthogonal is None:
 				raise RuntimeError(
 					"torch.nn.utils.parametrizations.orthogonal is required "
 					"for BlockOrthogonalLayer(mode='orthogonal')"
 				)
 			for width in self.block_widths:
 				layer = nn.Linear(width, width, bias=False)
-				with torch.no_grad():
-					layer.weight.copy_(torch.eye(width))
-				try:
-					layer = orthogonal(
-						layer,
-						"weight",
-						orthogonal_map=self.orthogonal_map,
-						use_trivialization=self.use_trivialization,
-					)
-				except TypeError as exc:
-					raise RuntimeError(
-						"Installed PyTorch does not support the requested "
-						"orthogonal parametrization options. Use a modern "
-						"PyTorch with torch.nn.utils.parametrizations.orthogonal."
-					) from exc
+				if self.mode == "frozen":
+					nn.init.orthogonal_(layer.weight)
+					layer.weight.requires_grad_(False)
+				else:
+					with torch.no_grad():
+						layer.weight.copy_(torch.eye(width))
+					try:
+						layer = orthogonal(
+							layer,
+							"weight",
+							orthogonal_map=self.orthogonal_map,
+							use_trivialization=self.use_trivialization,
+						)
+					except TypeError as exc:
+						raise RuntimeError(
+							"Installed PyTorch does not support the requested "
+							"orthogonal parametrization options. Use a modern "
+							"PyTorch with torch.nn.utils.parametrizations.orthogonal."
+						) from exc
 				self.blocks.append(layer)
 
 	def get_block_widths(self):
@@ -102,12 +106,9 @@ class BlockOrthogonalLayer(nn.Module):
 			raise ValueError(f"Expected feature dimension {self.total_dim}, got {x.shape[1]}")
 
 		raw_blocks = torch.split(x, self.block_widths, dim=1)
-		if self.mode == "identity":
-			transformed_blocks = list(raw_blocks)
-		else:
-			transformed_blocks = [
-				layer(block) for layer, block in zip(self.blocks, raw_blocks)
-			]
+		transformed_blocks = [
+			layer(block) for layer, block in zip(self.blocks, raw_blocks)
+		]
 
 		z = torch.cat(transformed_blocks, dim=1)
 		if return_blocks:
@@ -189,7 +190,7 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		super().__init__()
 		self.nesting_list = [int(dim) for dim in nesting_list]
 		self.num_classes = int(num_classes)
-		allowed_modes = {"identity", "orthogonal"}
+		allowed_modes = {"orthogonal", "frozen"}
 		allowed_maps = {"matrix_exp", "cayley", "householder"}
 		if mode not in allowed_modes:
 			raise ValueError(f"mode must be one of {sorted(allowed_modes)}, got {mode!r}")
@@ -211,24 +212,28 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 			self.classifiers.append(nn.Linear(dim, self.num_classes))
 
 		self.prefix_orthogonal_layers = nn.ModuleList()
-		if self.mode == "orthogonal":
+		if self.mode in {"orthogonal", "frozen"}:
 			for dim in self.nesting_list[:-1]:
 				layer = nn.Linear(dim, dim, bias=False)
-				with torch.no_grad():
-					layer.weight.copy_(torch.eye(dim))
-				try:
-					layer = orthogonal(
-						layer,
-						"weight",
-						orthogonal_map=self.orthogonal_map,
-						use_trivialization=self.use_trivialization,
-					)
-				except TypeError as exc:
-					raise RuntimeError(
-						"Installed PyTorch does not support the requested "
-						"orthogonal parametrization options. Use a modern "
-						"PyTorch with torch.nn.utils.parametrizations.orthogonal."
-					) from exc
+				if self.mode == "frozen":
+					nn.init.orthogonal_(layer.weight)
+					layer.weight.requires_grad_(False)
+				else:
+					with torch.no_grad():
+						layer.weight.copy_(torch.eye(dim))
+					try:
+						layer = orthogonal(
+							layer,
+							"weight",
+							orthogonal_map=self.orthogonal_map,
+							use_trivialization=self.use_trivialization,
+						)
+					except TypeError as exc:
+						raise RuntimeError(
+							"Installed PyTorch does not support the requested "
+							"orthogonal parametrization options. Use a modern "
+							"PyTorch with torch.nn.utils.parametrizations.orthogonal."
+						) from exc
 				self.prefix_orthogonal_layers.append(layer)
 
 		self.last_z = None
@@ -248,10 +253,7 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		prefixes = [prefix]
 		logits = [self.classifiers[0](prefix)]
 		for i, block in enumerate(blocks[1:]):
-			if self.mode == "orthogonal":
-				previous_prefix = self.prefix_orthogonal_layers[i](prefix)
-			else:
-				previous_prefix = prefix
+			previous_prefix = self.prefix_orthogonal_layers[i](prefix)
 			prefix = torch.cat([previous_prefix, block], dim=1)
 			prefixes.append(prefix)
 			logits.append(self.classifiers[i + 1](prefix))

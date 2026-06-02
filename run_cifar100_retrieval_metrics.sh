@@ -220,11 +220,11 @@ run_method bor_mrl_householder \
     --bor_orthogonal_map householder \
     --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
 
-run_method bor_mrl_identity \
-    "$CHECKPOINT_DIR/bor_mrl_identity_final_weights.pt" \
-    bor_mrl_identity 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
+run_method bor_mrl_frozen \
+    "$CHECKPOINT_DIR/bor_mrl_frozen_final_weights.pt" \
+    bor_mrl_frozen 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
     --bor_mrl \
-    --bor_mode identity
+    --bor_mode frozen
 
 "$PYTHON" - "$METRICS_DIR" "$SUMMARY_CSV" <<'PY'
 import csv
@@ -275,3 +275,4 @@ echo
 echo "Done."
 echo "Per-method JSON metrics: $METRICS_DIR"
 echo "CSV summary: $SUMMARY_CSV"
+echo "Open cifar100_retrieval_results.ipynb and set EXPERIMENT_DIR to visualize this run."

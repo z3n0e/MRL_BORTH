@@ -96,7 +96,7 @@ parser.add_argument('--old_ckpt', action='store_true', help='To use our trained 
 parser.add_argument('--workers', type=int, default=12, help='num workers for dataloader')
 parser.add_argument('--bor_mrl', action='store_true', help='Use recursive-prefix Block-Orthogonal Residual MRL')
 parser.add_argument('--bor_block_mrl', action='store_true', help='Use independent-block Block-Orthogonal Residual MRL')
-parser.add_argument('--bor_mode', type=str, choices=['identity', 'orthogonal'], default='orthogonal', help='BOR block transform mode')
+parser.add_argument('--bor_mode', type=str, choices=['orthogonal', 'frozen'], default='orthogonal', help='BOR block transform mode')
 parser.add_argument('--bor_orthogonal_map', type=str, choices=['matrix_exp', 'cayley', 'householder'], default='matrix_exp', help='BOR orthogonal parametrization map')
 parser.add_argument('--bor_use_trivialization', type=int, default=1, help='Use dynamic trivialization for BOR orthogonal maps')
 # dataset/eval args
