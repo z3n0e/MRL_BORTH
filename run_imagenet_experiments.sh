@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# Reproducibility knobs.
+SEED=${SEED:-0}
+DETERMINISTIC=${DETERMINISTIC:-1}
+export PYTHONHASHSEED="$SEED"
+export CUBLAS_WORKSPACE_CONFIG=${CUBLAS_WORKSPACE_CONFIG:-:4096:8}
+
+# Data/output locations.
+IMAGENET_DIR=${IMAGENET_DIR:-}
+EXPERIMENT_DIR=${EXPERIMENT_DIR:-"$ROOT_DIR/imagenet_runs/imagenet_seed_${SEED}_$(date +%Y%m%d_%H%M%S)"}
+
+if [[ -z "$IMAGENET_DIR" ]]; then
+    echo "Set IMAGENET_DIR to the ImageNet root containing train/ and val/."
+    echo "Example: IMAGENET_DIR=/path/to/imagenet $0"
+    exit 2
+fi
+
+if [[ ! -d "$IMAGENET_DIR/train" || ! -d "$IMAGENET_DIR/val" ]]; then
+    echo "Expected ImageNet folders at:"
+    echo "  $IMAGENET_DIR/train"
+    echo "  $IMAGENET_DIR/val"
+    exit 1
+fi
+
+# Training knobs.
+PYTHON=${PYTHON:-python}
+EPOCHS=${EPOCHS:-40}
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-512}
+VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-512}
+NUM_WORKERS=${NUM_WORKERS:-12}
+EVAL_WORKERS=${EVAL_WORKERS:-12}
+DISTRIBUTED=${DISTRIBUTED:-1}
+WORLD_SIZE=${WORLD_SIZE:-8}
+DIST_ADDRESS=${DIST_ADDRESS:-localhost}
+DIST_PORT=${DIST_PORT:-12355}
+
+# Method toggles.
+RUN_MRL=${RUN_MRL:-1}
+RUN_MRLE=${RUN_MRLE:-1}
+RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-1}
+RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-1}
+RUN_BOR_MRL=${RUN_BOR_MRL:-1}
+RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-1}
+RUN_BOR_MRL_FROZEN=${RUN_BOR_MRL_FROZEN:-1}
+RUN_BOR_MRL_CAYLEY=${RUN_BOR_MRL_CAYLEY:-1}
+RUN_BOR_MRL_HOUSEHOLDER=${RUN_BOR_MRL_HOUSEHOLDER:-1}
+FIXED_FEATURE_DIMS=${FIXED_FEATURE_DIMS:-512}
+
+# BOR-MRL knobs.
+BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-matrix_exp}
+BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
+
+TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
+EVAL_DIR="$EXPERIMENT_DIR/eval"
+CHECKPOINT_DIR="$EXPERIMENT_DIR/checkpoints"
+
+mkdir -p "$TRAINLOG_DIR" "$EVAL_DIR" "$CHECKPOINT_DIR"
+
+echo "ImageNet experiment directory: $EXPERIMENT_DIR"
+echo "Seed: $SEED"
+echo "Deterministic: $DETERMINISTIC"
+echo "ImageNet data root: $IMAGENET_DIR"
+echo "Distributed: $DISTRIBUTED"
+echo "World size: $WORLD_SIZE"
+
+write_manifest() {
+    {
+        echo "experiment_dir=$EXPERIMENT_DIR"
+        echo "seed=$SEED"
+        echo "deterministic=$DETERMINISTIC"
+        echo "imagenet_dir=$IMAGENET_DIR"
+        echo "epochs=$EPOCHS"
+        echo "train_batch_size=$TRAIN_BATCH_SIZE"
+        echo "val_batch_size=$VAL_BATCH_SIZE"
+        echo "num_workers=$NUM_WORKERS"
+        echo "eval_workers=$EVAL_WORKERS"
+        echo "distributed=$DISTRIBUTED"
+        echo "world_size=$WORLD_SIZE"
+        echo "dist_address=$DIST_ADDRESS"
+        echo "dist_port=$DIST_PORT"
+        echo "fixed_feature_dims=$FIXED_FEATURE_DIMS"
+        echo "run_mrl=$RUN_MRL"
+        echo "run_mrle=$RUN_MRLE"
+        echo "run_full_feature=$RUN_FULL_FEATURE"
+        echo "run_fixed_feature=$RUN_FIXED_FEATURE"
+        echo "run_bor_mrl=$RUN_BOR_MRL"
+        echo "run_bor_block_mrl=$RUN_BOR_BLOCK_MRL"
+        echo "run_bor_mrl_frozen=$RUN_BOR_MRL_FROZEN"
+        echo "run_bor_mrl_cayley=$RUN_BOR_MRL_CAYLEY"
+        echo "run_bor_mrl_householder=$RUN_BOR_MRL_HOUSEHOLDER"
+        echo "bor_orthogonal_map=$BOR_ORTHOGONAL_MAP"
+        echo "bor_use_trivialization=$BOR_USE_TRIVIALIZATION"
+    } > "$EXPERIMENT_DIR/manifest.txt"
+}
+
+train_run() {
+    local run_name=$1
+    shift
+
+    local run_dir="$TRAINLOG_DIR/$run_name"
+    if [[ -e "$run_dir" ]]; then
+        echo "Run directory already exists: $run_dir"
+        echo "Use a new EXPERIMENT_DIR or remove the existing run directory."
+        exit 1
+    fi
+
+    echo "Training $run_name..."
+    (
+        cd "$ROOT_DIR/train"
+        "$PYTHON" train_imagenet.py \
+            --config-file rn50_configs/rn50_40_epochs.yaml \
+            --data.dataset=imagenet \
+            --data.root="$IMAGENET_DIR" \
+            --data.num_workers="$NUM_WORKERS" \
+            --training.batch_size="$TRAIN_BATCH_SIZE" \
+            --training.epochs="$EPOCHS" \
+            --training.seed="$SEED" \
+            --training.deterministic="$DETERMINISTIC" \
+            --training.distributed="$DISTRIBUTED" \
+            --dist.world_size="$WORLD_SIZE" \
+            --dist.address="$DIST_ADDRESS" \
+            --dist.port="$DIST_PORT" \
+            --validation.batch_size="$VAL_BATCH_SIZE" \
+            --logging.folder="$TRAINLOG_DIR" \
+            --logging.run_name="$run_name" \
+            "$@"
+    )
+
+    local checkpoint="$run_dir/final_weights.pt"
+    if [[ ! -f "$checkpoint" ]]; then
+        echo "Training finished but did not produce checkpoint: $checkpoint"
+        exit 1
+    fi
+    cp "$checkpoint" "$CHECKPOINT_DIR/${run_name}_final_weights.pt"
+    if [[ -f "$run_dir/latest_weights.pt" ]]; then
+        cp "$run_dir/latest_weights.pt" "$CHECKPOINT_DIR/${run_name}_latest_weights.pt"
+    fi
+}
+
+eval_run() {
+    local run_name=$1
+    shift
+
+    local checkpoint="$TRAINLOG_DIR/$run_name/final_weights.pt"
+    local metrics_output="$EVAL_DIR/${run_name}.json"
+    local deterministic_args=()
+    if [[ "$DETERMINISTIC" == "1" ]]; then
+        deterministic_args=(--deterministic)
+    fi
+
+    if [[ ! -f "$checkpoint" ]]; then
+        echo "Missing checkpoint for $run_name: $checkpoint"
+        exit 1
+    fi
+
+    echo "Evaluating $run_name..."
+    (
+        cd "$ROOT_DIR/inference"
+        "$PYTHON" pytorch_inference.py \
+            --path "$checkpoint" \
+            --dataset 1K \
+            --data_root "$IMAGENET_DIR" \
+            --workers "$EVAL_WORKERS" \
+            --seed "$SEED" \
+            "${deterministic_args[@]}" \
+            --metrics_output "$metrics_output" \
+            "$@"
+    )
+}
+
+write_manifest
+
+if [[ "$RUN_MRL" == "1" ]]; then
+    train_run mrl --model.mrl=1
+    eval_run mrl --mrl
+fi
+
+if [[ "$RUN_MRLE" == "1" ]]; then
+    train_run mrle --model.efficient=1
+    eval_run mrle --mrl --efficient
+fi
+
+if [[ "$RUN_BOR_MRL" == "1" ]]; then
+    train_run bor_mrl \
+        --model.bor_mrl=1 \
+        --model.bor_mode=orthogonal \
+        --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION"
+    eval_run bor_mrl \
+        --bor_mrl \
+        --bor_mode orthogonal \
+        --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+fi
+
+if [[ "$RUN_BOR_BLOCK_MRL" == "1" ]]; then
+    train_run bor_block_mrl \
+        --model.bor_block_mrl=1 \
+        --model.bor_mode=orthogonal \
+        --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION"
+    eval_run bor_block_mrl \
+        --bor_block_mrl \
+        --bor_mode orthogonal \
+        --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+fi
+
+if [[ "$RUN_BOR_MRL_FROZEN" == "1" ]]; then
+    train_run bor_mrl_frozen \
+        --model.bor_mrl=1 \
+        --model.bor_mode=frozen
+    eval_run bor_mrl_frozen \
+        --bor_mrl \
+        --bor_mode frozen
+fi
+
+if [[ "$RUN_BOR_MRL_CAYLEY" == "1" ]]; then
+    train_run bor_mrl_cayley \
+        --model.bor_mrl=1 \
+        --model.bor_mode=orthogonal \
+        --model.bor_orthogonal_map=cayley \
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION"
+    eval_run bor_mrl_cayley \
+        --bor_mrl \
+        --bor_mode orthogonal \
+        --bor_orthogonal_map cayley \
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+fi
+
+if [[ "$RUN_BOR_MRL_HOUSEHOLDER" == "1" ]]; then
+    train_run bor_mrl_householder \
+        --model.bor_mrl=1 \
+        --model.bor_mode=orthogonal \
+        --model.bor_orthogonal_map=householder \
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION"
+    eval_run bor_mrl_householder \
+        --bor_mrl \
+        --bor_mode orthogonal \
+        --bor_orthogonal_map householder \
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+fi
+
+if [[ "$RUN_FULL_FEATURE" == "1" ]]; then
+    train_run full_feature
+    eval_run full_feature --rep_size 2048
+fi
+
+if [[ "$RUN_FIXED_FEATURE" == "1" ]]; then
+    for dim in $FIXED_FEATURE_DIMS; do
+        train_run "fixed_${dim}" --model.fixed_feature="$dim"
+        eval_run "fixed_${dim}" --rep_size "$dim"
+    done
+fi
+
+echo "Done."
+echo "Metrics JSON files are in: $EVAL_DIR"
+echo "Model checkpoints are in: $CHECKPOINT_DIR"
