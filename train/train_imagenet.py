@@ -57,6 +57,12 @@ def configure_multiprocessing_start_method():
 
 configure_multiprocessing_start_method()
 
+def seed_worker(worker_id):
+    worker_seed = ch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+
 Section('model', 'model details').params(
     arch=Param(And(str, OneOf(models.__dir__())), default='resnet18'),
     pretrained=Param(int, 'is pretrained? (1/0)', default=0),
@@ -325,11 +331,6 @@ class ImageNetTrainer:
     def _dataset_root(self, root):
         return Path(root).expanduser()
 
-    def _seed_worker(self, worker_id):
-        worker_seed = (self.seed + worker_id) % 2**32
-        np.random.seed(worker_seed)
-        random.seed(worker_seed)
-
     def _make_loader(self, dataset, batch_size, num_workers, pin_memory,
                      prefetch_factor, is_train, sampler, seed):
         generator = ch.Generator()
@@ -344,7 +345,7 @@ class ImageNetTrainer:
             'pin_memory': bool(pin_memory),
             'persistent_workers': num_workers > 0,
             'drop_last': is_train,
-            'worker_init_fn': self._seed_worker,
+            'worker_init_fn': seed_worker,
             'generator': generator
         }
         if num_workers > 0:
