@@ -9,6 +9,7 @@ from timeit import default_timer as timer
 import math
 import numpy as np
 from imagenet_id import indices_in_1k_a, indices_in_1k_o, indices_in_1k_r
+from pathlib import Path
 
 
 def get_ckpt(path):
@@ -245,8 +246,10 @@ def dump_feature_vector_array_lists(config_name, rep_size,  random_sample_dim, o
 		random_y = y_fwd_pass
 		print("Writing %s to disk with dim [%d x %d]" % (str(config_name)+"_X", X_fwd_pass.shape[0], rep_size))
 
-	np.save(output_path+str(config_name)+'-X.npy', random_X)
-	np.save(output_path+str(config_name)+'-y.npy', random_y)
+	output_dir = Path(output_path) if output_path else Path(".")
+	output_dir.mkdir(parents=True, exist_ok=True)
+	np.save(output_dir / (str(config_name)+'-X.npy'), random_X)
+	np.save(output_dir / (str(config_name)+'-y.npy'), random_y)
 
 
 def generate_retrieval_data(model, data_loader, config, random_sample_dim, rep_size, output_path):
@@ -260,16 +263,21 @@ def generate_retrieval_data(model, data_loader, config, random_sample_dim, rep_s
 	:param output_path: path to dump database and query arrays after inference
 	"""
 	model.eval()
-	model.avgpool.register_forward_hook(get_activation('avgpool'))
+	hook_handle = model.avgpool.register_forward_hook(get_activation('avgpool'))
 
-	with torch.no_grad():
-		with autocast():
+	try:
+		with torch.no_grad():
+			with autocast():
+				progress_every = max(1, int(len(data_loader) / 20))
 				for i_batch, (images, target) in enumerate(data_loader):
-					output = model(images.cuda())
-					append_feature_vector_to_list(activation['avgpool'].squeeze(), target.cuda(), rep_size)
-					if (i_batch) % int(len(data_loader)/20) == 0:
+					model(images.cuda(non_blocking=True))
+					features = activation['avgpool'].flatten(1)
+					append_feature_vector_to_list(features, target.cuda(non_blocking=True), rep_size)
+					if (i_batch) % progress_every == 0:
 						print("Finished processing: %f %%" % (i_batch / len(data_loader) * 100))
 				dump_feature_vector_array_lists(config, rep_size, random_sample_dim, output_path)
+	finally:
+		hook_handle.remove()
 
 	# re-initialize empty lists
 	global fwd_pass_x_list

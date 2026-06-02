@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import pytest
+import numpy as np
 
 from MRL import (
     BlockOrthogonalLayer,
@@ -10,6 +11,11 @@ from MRL import (
     Matryoshka_CE_Loss,
     MRL_Linear_Layer,
     block_widths_from_nesting_list,
+)
+from retrieval.metrics import (
+    compute_retrieval_metrics_at_k,
+    relevant_counts_by_label,
+    top1_accuracy,
 )
 
 def test_forward():
@@ -279,6 +285,39 @@ def test_independent_block_bor_mrl_backward():
 	loss.backward()
 	assert x.grad is not None
 	assert torch.isfinite(x.grad).all()
+
+
+def test_retrieval_metrics_use_database_relevant_counts():
+	db_labels = np.array([0, 0, 1, 1, 1, 2])
+	query_labels = np.array([0, 1, 2])
+	neighbors = np.array([
+		[1, 2, 0],
+		[0, 2, 4],
+		[3, 5, 0],
+	])
+
+	metrics = compute_retrieval_metrics_at_k(query_labels, db_labels, neighbors, k=2)
+
+	assert metrics["mAP"] == pytest.approx((0.5 + 0.25 + 0.25) / 3)
+	assert metrics["precision"] == pytest.approx(0.5)
+	assert metrics["recall"] == pytest.approx(((1 / 2) + (1 / 3) + 1) / 3)
+	assert metrics["topk"] == pytest.approx(1.0)
+	assert top1_accuracy(query_labels, db_labels, neighbors) == pytest.approx(1 / 3)
+
+
+def test_retrieval_metrics_accept_column_labels():
+	db_labels = np.array([[0], [0], [1], [1], [1], [2]], dtype=np.float16)
+	query_labels = np.array([[0], [1], [2]], dtype=np.float16)
+	neighbors = np.array([
+		[1, 2, 0],
+		[0, 2, 4],
+		[3, 5, 0],
+	])
+
+	assert relevant_counts_by_label(db_labels) == {0: 2, 1: 3, 2: 1}
+	metrics = compute_retrieval_metrics_at_k(query_labels, db_labels, neighbors, k=2)
+
+	assert metrics["recall"] == pytest.approx(((1 / 2) + (1 / 3) + 1) / 3)
 
 
 def test_bor_identity_matches_prefix_slicing_shape():

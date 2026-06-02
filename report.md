@@ -117,9 +117,9 @@ The same script can save predictions, logits, softmax probabilities, and ground-
 Retrieval utilities are split between `inference/pytorch_inference.py`, `utils.py`, and notebooks in `retrieval/`.
 
 - `generate_retrieval_data` collects feature vectors from the model's average-pooling layer and writes NumPy arrays.
-- `retrieval/faiss_nn.ipynb` builds FAISS nearest-neighbor indexes.
+- `retrieval/faiss_nn.ipynb` and `retrieval/faiss_nn.py` build FAISS nearest-neighbor indexes.
 - `retrieval/reranking.ipynb` performs adaptive reranking with larger representation sizes.
-- `retrieval/compute_metrics.ipynb` computes mAP, precision, recall, and top-k retrieval accuracy.
+- `retrieval/compute_metrics.ipynb` and `retrieval/compute_metrics.py` compute mAP, precision, recall, and top-k retrieval accuracy. Recall now derives the number of relevant database images from the labels, so the same code supports ImageNet and CIFAR-100.
 
 CIFAR-100 is now available for retrieval array generation through:
 

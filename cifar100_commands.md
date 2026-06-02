@@ -207,6 +207,44 @@ python pytorch_inference.py \
   --rep_size 2048
 ```
 
+## 15. Compute Retrieval Metrics
+
+Dump CIFAR-100 train/test feature arrays for a checkpoint:
+
+```bash
+cd ../inference
+
+python pytorch_inference.py \
+  --retrieval \
+  --path ../train/trainlogs/<run_id>/final_weights.pt \
+  --dataset CIFAR100 \
+  --data_root /path/to/cifar100/root \
+  --retrieval_array_path ../retrieval_arrays \
+  --mrl
+```
+
+Build nearest-neighbor shortlists and compute metrics:
+
+```bash
+cd ../retrieval
+
+python faiss_nn.py \
+  --root ../retrieval_arrays \
+  --dataset CIFAR100 \
+  --model mrl \
+  --index-type exactl2 \
+  --k 2048
+
+python compute_metrics.py \
+  --root ../retrieval_arrays \
+  --dataset CIFAR100 \
+  --model mrl \
+  --eval-config vanilla \
+  --index-type exactl2
+```
+
+For MRL-E use `--model mrl_e`. For fixed-feature checkpoints, pass `--rep_size <dim>` while dumping arrays and use `--model ff --rep-size <dim>` for the retrieval scripts.
+
 ## Notes
 
 - ImageNet remains the default dataset. CIFAR-100 is selected by the config file during training and by `--dataset CIFAR100` during inference.

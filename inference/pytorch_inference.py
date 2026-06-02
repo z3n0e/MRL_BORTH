@@ -123,9 +123,6 @@ if (args.bor_mrl or args.bor_block_mrl) and args.mrl:
 	raise ValueError("BOR-MRL is its own MRL variant; do not combine BOR-MRL with --mrl.")
 if (args.bor_mrl or args.bor_block_mrl) and args.efficient:
 	raise ValueError("BOR-MRL currently uses one classifier per prefix; do not combine BOR-MRL with --efficient.")
-if (args.bor_mrl or args.bor_block_mrl) and args.retrieval:
-	raise NotImplementedError("--retrieval with BOR-MRL is not implemented because BOR-MRL transforms residual blocks inside the classification head.")
-
 set_eval_reproducibility(args.seed, args.deterministic)
 dataset_config = get_dataset_config(args.dataset)
 num_classes = dataset_config['num_classes']
