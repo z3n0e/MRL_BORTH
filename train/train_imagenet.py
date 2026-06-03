@@ -72,10 +72,12 @@ Section('model', 'model details').params(
     fixed_feature=Param(int, 'In case we want to do the fixed feature training, by default it is 2048', default=2048),
     bor_mrl=Param(int, 'Use recursive-prefix Block-Orthogonal Residual MRL? (1/0)', default=0),
     bor_block_mrl=Param(int, 'Use independent-block Block-Orthogonal Residual MRL? (1/0)', default=0),
+    cascade_stop_gradient_mrl=Param(int, 'Use recursive-prefix stop-gradient MRL without rotations? (1/0)', default=0),
     bor_mode=Param(And(str, OneOf(['orthogonal', 'frozen'])), 'BOR block transform mode', default='orthogonal'),
     bor_orthogonal_map=Param(And(str, OneOf(['matrix_exp', 'cayley', 'householder'])), 'BOR orthogonal parametrization map', default='matrix_exp'),
     bor_use_trivialization=Param(int, 'Use dynamic trivialization for BOR orthogonal maps? (1/0)', default=1),
-    bor_stop_gradient=Param(And(int, OneOf([-1, 0, 1])), 'Stop gradients before BOR orthogonal maps? (0 off, 1 on, -1 class default)', default=0)
+    bor_stop_gradient=Param(And(int, OneOf([-1, 0, 1])), 'Stop gradients before BOR orthogonal maps? (0 off, 1 on, -1 class default)', default=0),
+    cascade_stop_gradient=Param(And(int, OneOf([-1, 0, 1])), 'Stop gradients between cascade prefixes? (0 off, 1 on, -1 class default)', default=-1)
 )
 
 Section('resolution', 'resolution scheduling').params(
@@ -167,10 +169,7 @@ def set_reproducibility(seed, deterministic):
         if hasattr(ch.backends.cudnn, 'allow_tf32'):
             ch.backends.cudnn.allow_tf32 = False
         if hasattr(ch, 'use_deterministic_algorithms'):
-            try:
-                ch.use_deterministic_algorithms(True, warn_only=True)
-            except TypeError:
-                ch.use_deterministic_algorithms(True)
+            ch.use_deterministic_algorithms(True)
     else:
         ch.backends.cudnn.benchmark = True
 
@@ -216,12 +215,14 @@ class ImageNetTrainer:
     @param('model.mrl')
     @param('model.bor_mrl')
     @param('model.bor_block_mrl')
+    @param('model.cascade_stop_gradient_mrl')
     @param('model.nesting_start')
     @param('model.fixed_feature')
     @param('data.dataset')
     @param('training.seed')
     @param('training.deterministic')
     def __init__(self, gpu, distributed, efficient, mrl, bor_mrl, bor_block_mrl,
+                 cascade_stop_gradient_mrl,
                  nesting_start, fixed_feature,
                  dataset, seed, deterministic):
         self.all_params = get_current_config(); 
@@ -232,13 +233,22 @@ class ImageNetTrainer:
         self.efficient = efficient
         self.bor_mrl = bool(bor_mrl)
         self.bor_block_mrl = bool(bor_block_mrl)
-        if self.bor_mrl and self.bor_block_mrl:
-            raise ValueError("Choose only one BOR-MRL method: --model.bor_mrl=1 or --model.bor_block_mrl=1.")
-        if (self.bor_mrl or self.bor_block_mrl) and mrl:
-            raise ValueError("BOR-MRL is its own MRL variant; do not combine BOR-MRL with --model.mrl=1.")
-        if (self.bor_mrl or self.bor_block_mrl) and self.efficient:
-            raise ValueError("BOR-MRL currently uses one classifier per prefix; do not combine BOR-MRL with --model.efficient=1.")
-        self.nesting = (self.efficient or mrl or self.bor_mrl or self.bor_block_mrl)
+        self.cascade_stop_gradient_mrl = bool(cascade_stop_gradient_mrl)
+        exclusive_mrl_variants = [
+            self.bor_mrl,
+            self.bor_block_mrl,
+            self.cascade_stop_gradient_mrl,
+        ]
+        if sum(exclusive_mrl_variants) > 1:
+            raise ValueError(
+                "Choose only one custom MRL method: --model.bor_mrl=1, "
+                "--model.bor_block_mrl=1, or --model.cascade_stop_gradient_mrl=1."
+            )
+        if any(exclusive_mrl_variants) and mrl:
+            raise ValueError("Custom MRL variants are their own MRL methods; do not combine them with --model.mrl=1.")
+        if any(exclusive_mrl_variants) and self.efficient:
+            raise ValueError("Custom MRL variants use one classifier per prefix; do not combine them with --model.efficient=1.")
+        self.nesting = (self.efficient or mrl or any(exclusive_mrl_variants))
         self.nesting_start = nesting_start
         self.nesting_list = [2**i for i in range(self.nesting_start, 12)] if self.nesting else None
         self.fixed_feature=fixed_feature
@@ -521,9 +531,10 @@ class ImageNetTrainer:
     @param('model.bor_orthogonal_map')
     @param('model.bor_use_trivialization')
     @param('model.bor_stop_gradient')
+    @param('model.cascade_stop_gradient')
     def create_model_and_scaler(self, arch, pretrained, distributed, use_blurpool,
                                 bor_mode, bor_orthogonal_map, bor_use_trivialization,
-                                bor_stop_gradient):
+                                bor_stop_gradient, cascade_stop_gradient):
         '''
         Nesting Start is just the log_2 {smallest dim} unit. In our work we used powers of two, however this part can be changed easily. 
         If we do not want to use MRL, we just keep both the efficient and mrl flags to 0
@@ -544,6 +555,13 @@ class ImageNetTrainer:
                 orthogonal_map=bor_orthogonal_map,
                 use_trivialization=bool(bor_use_trivialization),
                 stop_gradient=resolve_stop_gradient_override(bor_stop_gradient),
+            )
+        elif self.cascade_stop_gradient_mrl:
+            print("Creating classification layer of type :\t Cascade Stop-Gradient MRL")
+            model.fc = CascadeStopGradientMRLHead(
+                self.nesting_list,
+                num_classes=self.num_classes,
+                stop_gradient=resolve_stop_gradient_override(cascade_stop_gradient),
             )
         elif self.bor_block_mrl:
             print("Creating classification layer of type :\t BOR-MRL (independent residual blocks)")

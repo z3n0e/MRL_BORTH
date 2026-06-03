@@ -44,21 +44,23 @@ DIST_ADDRESS=${DIST_ADDRESS:-localhost}
 DIST_PORT=${DIST_PORT:-12355}
 
 # Method toggles.
-RUN_MRL=${RUN_MRL:-0}
-RUN_MRLE=${RUN_MRLE:-0}
-RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-0}
-RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-0}
-RUN_BOR_MRL=${RUN_BOR_MRL:-0}
-RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-0}
-RUN_BOR_MRL_FROZEN=${RUN_BOR_MRL_FROZEN:-0}
-RUN_BOR_MRL_CAYLEY=${RUN_BOR_MRL_CAYLEY:-0}
+RUN_MRL=${RUN_MRL:-1}
+RUN_MRLE=${RUN_MRLE:-1}
+RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-1}
+RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-1}
+RUN_BOR_MRL=${RUN_BOR_MRL:-1}
+RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-1}
+RUN_CASCADE_STOP_GRADIENT_MRL=${RUN_CASCADE_STOP_GRADIENT_MRL:-1}
+RUN_BOR_MRL_FROZEN=${RUN_BOR_MRL_FROZEN:-1}
+RUN_BOR_MRL_CAYLEY=${RUN_BOR_MRL_CAYLEY:-1}
 RUN_BOR_MRL_HOUSEHOLDER=${RUN_BOR_MRL_HOUSEHOLDER:-1}
-FIXED_FEATURE_DIMS=${FIXED_FEATURE_DIMS:-512}
+FIXED_FEATURE_DIMS=${FIXED_FEATURE_DIMS:-"8 16 32 64 128 256 512 1024"}
 
 # BOR-MRL knobs.
 BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-matrix_exp}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
 BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-1}
+CASCADE_STOP_GRADIENT=${CASCADE_STOP_GRADIENT:-1}
 
 TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
 EVAL_DIR="$EXPERIMENT_DIR/eval"
@@ -95,12 +97,14 @@ write_manifest() {
         echo "run_fixed_feature=$RUN_FIXED_FEATURE"
         echo "run_bor_mrl=$RUN_BOR_MRL"
         echo "run_bor_block_mrl=$RUN_BOR_BLOCK_MRL"
+        echo "run_cascade_stop_gradient_mrl=$RUN_CASCADE_STOP_GRADIENT_MRL"
         echo "run_bor_mrl_frozen=$RUN_BOR_MRL_FROZEN"
         echo "run_bor_mrl_cayley=$RUN_BOR_MRL_CAYLEY"
         echo "run_bor_mrl_householder=$RUN_BOR_MRL_HOUSEHOLDER"
         echo "bor_orthogonal_map=$BOR_ORTHOGONAL_MAP"
         echo "bor_use_trivialization=$BOR_USE_TRIVIALIZATION"
         echo "bor_stop_gradient=$BOR_STOP_GRADIENT"
+        echo "cascade_stop_gradient=$CASCADE_STOP_GRADIENT"
     } > "$EXPERIMENT_DIR/manifest.txt"
 }
 
@@ -219,6 +223,15 @@ if [[ "$RUN_BOR_BLOCK_MRL" == "1" ]]; then
         --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
         --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
         --bor_stop_gradient "$BOR_STOP_GRADIENT"
+fi
+
+if [[ "$RUN_CASCADE_STOP_GRADIENT_MRL" == "1" ]]; then
+    train_run cascade_stop_gradient_mrl \
+        --model.cascade_stop_gradient_mrl=1 \
+        --model.cascade_stop_gradient="$CASCADE_STOP_GRADIENT"
+    eval_run cascade_stop_gradient_mrl \
+        --cascade_stop_gradient_mrl \
+        --cascade_stop_gradient "$CASCADE_STOP_GRADIENT"
 fi
 
 if [[ "$RUN_BOR_MRL_FROZEN" == "1" ]]; then

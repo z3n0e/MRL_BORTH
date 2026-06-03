@@ -58,6 +58,8 @@ The repository also includes the earlier independent-block variant behind `--mod
 
 Stop-gradient before BOR orthogonal maps is controlled by `--model.bor_stop_gradient`. The default is `0`, meaning off for every BOR method. Use `1` to turn it on; `-1` is accepted as "use the class default", which is also off.
 
+For the no-rotation stop-gradient ablation, use `--model.cascade_stop_gradient_mrl=1`. This builds prefixes as `[sg(z_old), h_new]` with raw residual blocks and independent MRL classifiers. The cascade stop-gradient default is on; use `--model.cascade_stop_gradient=0` to disable it for a control run.
+
 Example CIFAR-100 run:
 
 ```bash
@@ -78,6 +80,12 @@ For the independent residual-block variant, replace `--model.bor_mrl=1` with:
 
 ```bash
 --model.bor_block_mrl=1
+```
+
+For the cascade stop-gradient ablation, replace `--model.bor_mrl=1` with:
+
+```bash
+--model.cascade_stop_gradient_mrl=1
 ```
 
 ## [Training ResNet50 models](train/)

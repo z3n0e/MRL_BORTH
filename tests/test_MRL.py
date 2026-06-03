@@ -6,6 +6,7 @@ import numpy as np
 from MRL import (
     BlockOrthogonalLayer,
     BlockOrthogonalResidualMRLHead,
+    CascadeStopGradientMRLHead,
     FixedFeatureLayer,
     IndependentBlockOrthogonalMRLHead,
     Matryoshka_CE_Loss,
@@ -214,6 +215,23 @@ def test_independent_block_bor_mrl_head_output_shapes():
 		assert logits.shape == (5, 10)
 
 
+def test_cascade_stop_gradient_mrl_head_output_shapes_and_prefixes():
+	head = CascadeStopGradientMRLHead([8, 16, 32], num_classes=10)
+	x = torch.randn(5, 32)
+
+	output = head(x)
+
+	assert isinstance(output, tuple)
+	assert len(output) == 3
+	assert head.block_widths == [8, 8, 16]
+	assert [block.shape for block in head.last_blocks] == [(5, 8), (5, 8), (5, 16)]
+	assert [prefix.shape for prefix in head.last_prefixes] == [(5, 8), (5, 16), (5, 32)]
+	for dim, prefix in zip(head.nesting_list, head.last_prefixes):
+		assert torch.equal(prefix, x[:, :dim])
+	for logits in output:
+		assert logits.shape == (5, 10)
+
+
 def test_bor_mrl_uses_prefix_orthogonal_layers():
 	head = BlockOrthogonalResidualMRLHead(
 		[8, 16, 32],
@@ -350,6 +368,38 @@ def test_bor_mrl_stop_gradient_defaults_to_disabled():
 		mode="orthogonal",
 		orthogonal_map="matrix_exp",
 	)
+	with torch.no_grad():
+		head.classifiers[-1].weight.fill_(1.0)
+		head.classifiers[-1].bias.zero_()
+
+	x = torch.randn(5, 4, requires_grad=True)
+	loss = head(x)[-1].sum()
+	loss.backward()
+
+	assert not head.stop_gradient
+	assert x.grad is not None
+	assert x.grad[:, :2].abs().sum() > 0
+	assert x.grad[:, 2:].abs().sum() > 0
+
+
+def test_cascade_stop_gradient_defaults_to_enabled():
+	head = CascadeStopGradientMRLHead([2, 4], num_classes=3)
+	with torch.no_grad():
+		head.classifiers[-1].weight.fill_(1.0)
+		head.classifiers[-1].bias.zero_()
+
+	x = torch.randn(5, 4, requires_grad=True)
+	loss = head(x)[-1].sum()
+	loss.backward()
+
+	assert head.stop_gradient
+	assert x.grad is not None
+	assert torch.allclose(x.grad[:, :2], torch.zeros_like(x.grad[:, :2]))
+	assert x.grad[:, 2:].abs().sum() > 0
+
+
+def test_cascade_stop_gradient_can_be_disabled():
+	head = CascadeStopGradientMRLHead([2, 4], num_classes=3, stop_gradient=False)
 	with torch.no_grad():
 		head.classifiers[-1].weight.fill_(1.0)
 		head.classifiers[-1].bias.zero_()

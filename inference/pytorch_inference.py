@@ -117,10 +117,12 @@ parser.add_argument('--old_ckpt', action='store_true', help='To use our trained 
 parser.add_argument('--workers', type=int, default=12, help='num workers for dataloader')
 parser.add_argument('--bor_mrl', action='store_true', help='Use recursive-prefix Block-Orthogonal Residual MRL')
 parser.add_argument('--bor_block_mrl', action='store_true', help='Use independent-block Block-Orthogonal Residual MRL')
+parser.add_argument('--cascade_stop_gradient_mrl', action='store_true', help='Use recursive-prefix stop-gradient MRL without rotations')
 parser.add_argument('--bor_mode', type=str, choices=['orthogonal', 'frozen'], default='orthogonal', help='BOR block transform mode')
 parser.add_argument('--bor_orthogonal_map', type=str, choices=['matrix_exp', 'cayley', 'householder'], default='matrix_exp', help='BOR orthogonal parametrization map')
 parser.add_argument('--bor_use_trivialization', type=int, default=1, help='Use dynamic trivialization for BOR orthogonal maps')
 parser.add_argument('--bor_stop_gradient', type=int, choices=[-1, 0, 1], default=0, help='Stop gradients before BOR orthogonal maps? 0 off, 1 on, -1 class default')
+parser.add_argument('--cascade_stop_gradient', type=int, choices=[-1, 0, 1], default=-1, help='Stop gradients between cascade prefixes? 0 off, 1 on, -1 class default')
 # dataset/eval args
 parser.add_argument('--tta', action='store_true', help='Test Time Augmentation Flag')
 parser.add_argument('--dataset', type=str, default='V1', help='Benchmarks: V1/V2/A/Sketch/R/CIFAR100')
@@ -139,12 +141,17 @@ parser.add_argument('--retrieval_array_path', default='', help='path to save dat
 
 
 args = parser.parse_args()
-if args.bor_mrl and args.bor_block_mrl:
-	raise ValueError("Choose only one BOR-MRL method: --bor_mrl or --bor_block_mrl.")
-if (args.bor_mrl or args.bor_block_mrl) and args.mrl:
-	raise ValueError("BOR-MRL is its own MRL variant; do not combine BOR-MRL with --mrl.")
-if (args.bor_mrl or args.bor_block_mrl) and args.efficient:
-	raise ValueError("BOR-MRL currently uses one classifier per prefix; do not combine BOR-MRL with --efficient.")
+custom_mrl_variants = [
+	args.bor_mrl,
+	args.bor_block_mrl,
+	args.cascade_stop_gradient_mrl,
+]
+if sum(custom_mrl_variants) > 1:
+	raise ValueError("Choose only one custom MRL method: --bor_mrl, --bor_block_mrl, or --cascade_stop_gradient_mrl.")
+if any(custom_mrl_variants) and args.mrl:
+	raise ValueError("Custom MRL variants are their own MRL methods; do not combine them with --mrl.")
+if any(custom_mrl_variants) and args.efficient:
+	raise ValueError("Custom MRL variants use one classifier per prefix; do not combine them with --efficient.")
 set_eval_reproducibility(args.seed, args.deterministic)
 dataset_config = get_dataset_config(args.dataset)
 num_classes = dataset_config['num_classes']
@@ -159,6 +166,12 @@ if args.bor_mrl:
 		orthogonal_map=args.bor_orthogonal_map,
 		use_trivialization=bool(args.bor_use_trivialization),
 		stop_gradient=resolve_stop_gradient_override(args.bor_stop_gradient),
+	)
+elif args.cascade_stop_gradient_mrl:
+	model.fc = CascadeStopGradientMRLHead(
+		NESTING_LIST,
+		num_classes=num_classes,
+		stop_gradient=resolve_stop_gradient_override(args.cascade_stop_gradient),
 	)
 elif args.bor_block_mrl:
 	model.fc = IndependentBlockOrthogonalMRLHead(
@@ -184,7 +197,7 @@ apply_blurpool(model)
 model.load_state_dict(get_ckpt(args.path)) # Since our models have a torch DDP wrapper, we modify keys to exclude first 7 chars. 
 model = model.cuda()
 model.eval()
-is_nested_model = args.mrl or args.bor_mrl or args.bor_block_mrl
+is_nested_model = args.mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl
 
 normalize = transforms.Normalize(mean=dataset_config['mean'], std=dataset_config['std'])
 test_transform = transforms.Compose([
@@ -258,10 +271,12 @@ if not args.retrieval:
 		'mrl': bool(args.mrl),
 		'bor_mrl': bool(args.bor_mrl),
 		'bor_block_mrl': bool(args.bor_block_mrl),
+		'cascade_stop_gradient_mrl': bool(args.cascade_stop_gradient_mrl),
 		'bor_mode': args.bor_mode,
 		'bor_orthogonal_map': args.bor_orthogonal_map,
 		'bor_use_trivialization': bool(args.bor_use_trivialization),
 		'bor_stop_gradient': resolve_stop_gradient_override(args.bor_stop_gradient),
+		'cascade_stop_gradient': resolve_stop_gradient_override(args.cascade_stop_gradient),
 		'efficient': bool(args.efficient),
 		'rep_size': int(args.rep_size),
 		'tta': bool(args.tta),
@@ -277,7 +292,7 @@ if not args.retrieval:
 
 	# saving torch tensor for model analysis... 
 	if args.save_logits or args.save_softmax or args.save_predictions:
-		save_string = f"mrl={args.mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
+		save_string = f"mrl={args.mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_cascade_stop_gradient_mrl={args.cascade_stop_gradient_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
 		if args.save_logits:
 			torch.save(logits, save_string+"_logits.pth")
 		if args.save_predictions:

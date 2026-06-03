@@ -117,6 +117,19 @@ python train_imagenet.py \
   --logging.folder=trainlogs
 ```
 
+## 8a. Train Cascade Stop-Gradient MRL
+
+This is the no-rotation ablation: each larger prefix is `[sg(z_old), h_new]` by default.
+
+```bash
+python train_imagenet.py \
+  --config-file rn50_configs/rn50_cifar100.yaml \
+  --model.cascade_stop_gradient_mrl=1 \
+  --model.cascade_stop_gradient=1 \
+  --data.root=/path/to/cifar100/root \
+  --logging.folder=trainlogs
+```
+
 ## 9. Train BOR-MRL Map Ablations
 
 Cayley:
@@ -163,6 +176,8 @@ python pytorch_inference.py \
 For frozen orthogonal transforms, pass `--bor_mode frozen`. For Cayley or Householder, pass the matching `--bor_orthogonal_map`.
 
 To evaluate the independent-block variant, replace `--bor_mrl` with `--bor_block_mrl`.
+
+To evaluate the cascade stop-gradient ablation, replace `--bor_mrl` with `--cascade_stop_gradient_mrl`.
 
 For BOR stop-gradient ablations, use `--model.bor_stop_gradient=1` or `--model.bor_stop_gradient=0` during training. The inference flag is `--bor_stop_gradient`; the default is off.
 

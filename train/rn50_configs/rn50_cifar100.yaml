@@ -15,10 +15,12 @@ model:
   arch: resnet50
   bor_mrl: 0
   bor_block_mrl: 0
+  cascade_stop_gradient_mrl: 0
   bor_mode: orthogonal
   bor_orthogonal_map: matrix_exp
   bor_use_trivialization: 1
   bor_stop_gradient: 0
+  cascade_stop_gradient: -1
 resolution:
   end_ramp: 0
   max_res: 32

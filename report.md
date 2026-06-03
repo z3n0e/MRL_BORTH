@@ -54,10 +54,13 @@ The project now supports these training variants:
 - BOR-MRL cayley
 - BOR-MRL householder
 - Independent-block BOR-MRL
+- Cascade stop-gradient MRL
 
 BOR-MRL builds each larger representation by applying an orthogonal transform to the previously trained prefix and concatenating the next raw residual coordinate block. With `[8, 16, 32]`, the classifiers see `h[:8]`, then `[Q_8 h[:8], h[8:16]]`, then `[Q_16 z_16, h[16:32]]`. Training still uses the same Matryoshka cross-entropy over independent linear softmax classifiers. No results are claimed here until the corresponding experiments are run.
 
 Independent-block BOR-MRL keeps the older behavior as a separate method: it transforms each residual block independently, concatenates the transformed blocks, and applies the same MRL softmax classifiers to transformed prefixes.
+
+Cascade stop-gradient MRL is the no-rotation ablation for BOR-MRL. It recursively builds each larger prefix as `[sg(z_old), h_new]` by default, so larger-prefix losses do not backpropagate into earlier prefix blocks.
 
 ## CIFAR-100 Usage
 

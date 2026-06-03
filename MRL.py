@@ -308,6 +308,60 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		return torch.stack([block.norm(p=2, dim=1).mean() for block in self.last_blocks])
 
 
+class CascadeStopGradientMRLHead(nn.Module):
+	def __init__(self, nesting_list, num_classes, stop_gradient=True):
+		super().__init__()
+		self.nesting_list = [int(dim) for dim in nesting_list]
+		self.num_classes = int(num_classes)
+		self.block_widths = block_widths_from_nesting_list(self.nesting_list)
+		self.stop_gradient = resolve_stop_gradient(stop_gradient, default=True)
+
+		self.classifiers = nn.ModuleList([
+			nn.Linear(dim, self.num_classes)
+			for dim in self.nesting_list
+		])
+
+		self.last_blocks = None
+		self.last_prefixes = None
+
+	def forward(self, x):
+		if x.dim() != 2:
+			raise ValueError(f"CascadeStopGradientMRLHead expects [B, D] input, got shape {tuple(x.shape)}")
+		if x.shape[1] != self.nesting_list[-1]:
+			raise ValueError(f"Expected feature dimension {self.nesting_list[-1]}, got {x.shape[1]}")
+
+		blocks = list(torch.split(x, self.block_widths, dim=1))
+		self.last_blocks = blocks
+
+		prefix = blocks[0]
+		prefixes = [prefix]
+		logits = [self.classifiers[0](prefix)]
+
+		for i, block in enumerate(blocks[1:]):
+			old_prefix = maybe_stop_gradient(prefix, self.stop_gradient)
+			prefix = torch.cat([old_prefix, block], dim=1)
+
+			prefixes.append(prefix)
+			logits.append(self.classifiers[i + 1](prefix))
+
+		self.last_prefixes = prefixes
+		return tuple(logits)
+
+	def prefix_gram_error(self, x):
+		self(x)
+		errors = []
+		for dim, prefix in zip(self.nesting_list, self.last_prefixes):
+			raw_gram = x[:, :dim] @ x[:, :dim].t()
+			transformed_gram = prefix @ prefix.t()
+			errors.append((raw_gram - transformed_gram).abs().max())
+		return torch.stack(errors).max()
+
+	def block_norms(self):
+		if self.last_blocks is None:
+			raise RuntimeError("block_norms() requires a previous forward pass")
+		return torch.stack([block.norm(p=2, dim=1).mean() for block in self.last_blocks])
+
+
 class MRL_Linear_Layer(nn.Module):
 	def __init__(self, nesting_list: List, num_classes=1000, efficient=False, **kwargs):
 		super(MRL_Linear_Layer, self).__init__()

@@ -43,7 +43,8 @@ USE_GPU=${USE_GPU:-1}
 REBUILD_INDEX=${REBUILD_INDEX:-0}
 FORCE_ARRAYS=${FORCE_ARRAYS:-0}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
-BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-0}
+BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-1}
+CASCADE_STOP_GRADIENT=${CASCADE_STOP_GRADIENT:-1}
 
 mkdir -p "$RETRIEVAL_ROOT" "$METRICS_DIR"
 
@@ -56,6 +57,7 @@ echo "Index type: $INDEX_TYPE"
 echo "Neighbor shortlist length: $K"
 echo "Metric k values: $SHORTLIST"
 echo "BOR stop gradient: $BOR_STOP_GRADIENT"
+echo "Cascade stop gradient: $CASCADE_STOP_GRADIENT"
 echo
 
 run_method() {
@@ -207,6 +209,12 @@ run_method bor_block_mrl \
     --bor_orthogonal_map matrix_exp \
     --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
     --bor_stop_gradient "$BOR_STOP_GRADIENT"
+
+run_method cascade_stop_gradient_mrl \
+    "$CHECKPOINT_DIR/cascade_stop_gradient_mrl_final_weights.pt" \
+    cascade_stop_gradient_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
+    --cascade_stop_gradient_mrl \
+    --cascade_stop_gradient "$CASCADE_STOP_GRADIENT"
 
 run_method bor_mrl_cayley \
     "$CHECKPOINT_DIR/bor_mrl_cayley_final_weights.pt" \
