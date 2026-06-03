@@ -253,7 +253,7 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		prefixes = [prefix]
 		logits = [self.classifiers[0](prefix)]
 		for i, block in enumerate(blocks[1:]):
-			previous_prefix = self.prefix_orthogonal_layers[i](prefix)
+			previous_prefix = self.prefix_orthogonal_layers[i](prefix.detach())
 			prefix = torch.cat([previous_prefix, block], dim=1)
 			prefixes.append(prefix)
 			logits.append(self.classifiers[i + 1](prefix))
