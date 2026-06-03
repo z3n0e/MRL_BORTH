@@ -48,9 +48,29 @@ def block_widths_from_nesting_list(nesting_list):
 	return [dims[0]] + [dim - prev_dim for prev_dim, dim in zip(dims, dims[1:])]
 
 
+def maybe_stop_gradient(x, stop_gradient):
+	return x.detach() if stop_gradient else x
+
+
+def resolve_stop_gradient_override(value):
+	if value is None:
+		return None
+	value = int(value)
+	if value not in {-1, 0, 1}:
+		raise ValueError("stop-gradient override must be -1, 0, or 1")
+	return None if value == -1 else bool(value)
+
+
+def resolve_stop_gradient(value, default):
+	if value is None:
+		return bool(default)
+	return bool(value)
+
+
 class BlockOrthogonalLayer(nn.Module):
 	def __init__(self, nesting_list, mode="orthogonal",
-	             orthogonal_map="matrix_exp", use_trivialization=True):
+	             orthogonal_map="matrix_exp", use_trivialization=True,
+	             stop_gradient=False):
 		super().__init__()
 		allowed_modes = {"orthogonal", "frozen"}
 		allowed_maps = {"matrix_exp", "cayley", "householder"}
@@ -64,6 +84,7 @@ class BlockOrthogonalLayer(nn.Module):
 		self.mode = mode
 		self.orthogonal_map = orthogonal_map
 		self.use_trivialization = bool(use_trivialization)
+		self.stop_gradient = resolve_stop_gradient(stop_gradient, default=False)
 		self.total_dim = self.nesting_list[-1]
 
 		self.blocks = nn.ModuleList()
@@ -107,7 +128,8 @@ class BlockOrthogonalLayer(nn.Module):
 
 		raw_blocks = torch.split(x, self.block_widths, dim=1)
 		transformed_blocks = [
-			layer(block) for layer, block in zip(self.blocks, raw_blocks)
+			layer(maybe_stop_gradient(block, self.stop_gradient))
+			for layer, block in zip(self.blocks, raw_blocks)
 		]
 
 		z = torch.cat(transformed_blocks, dim=1)
@@ -128,13 +150,15 @@ class BlockOrthogonalLayer(nn.Module):
 		return (
 			f"nesting_list={self.nesting_list}, mode={self.mode}, "
 			f"orthogonal_map={self.orthogonal_map}, "
-			f"use_trivialization={self.use_trivialization}"
+			f"use_trivialization={self.use_trivialization}, "
+			f"stop_gradient={self.stop_gradient}"
 		)
 
 
 class IndependentBlockOrthogonalMRLHead(nn.Module):
 	def __init__(self, nesting_list, num_classes, mode="orthogonal",
-	             orthogonal_map="matrix_exp", use_trivialization=True):
+	             orthogonal_map="matrix_exp", use_trivialization=True,
+	             stop_gradient=False):
 		super().__init__()
 		self.nesting_list = [int(dim) for dim in nesting_list]
 		self.num_classes = int(num_classes)
@@ -143,7 +167,9 @@ class IndependentBlockOrthogonalMRLHead(nn.Module):
 			mode=mode,
 			orthogonal_map=orthogonal_map,
 			use_trivialization=use_trivialization,
+			stop_gradient=stop_gradient,
 		)
+		self.stop_gradient = self.block_transform.stop_gradient
 		self.classifiers = nn.ModuleList([
 			nn.Linear(dim, self.num_classes) for dim in self.nesting_list
 		])
@@ -186,7 +212,8 @@ class IndependentBlockOrthogonalMRLHead(nn.Module):
 
 class BlockOrthogonalResidualMRLHead(nn.Module):
 	def __init__(self, nesting_list, num_classes, mode="orthogonal",
-	             orthogonal_map="matrix_exp", use_trivialization=True):
+	             orthogonal_map="matrix_exp", use_trivialization=True,
+	             stop_gradient=False):
 		super().__init__()
 		self.nesting_list = [int(dim) for dim in nesting_list]
 		self.num_classes = int(num_classes)
@@ -205,6 +232,7 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		self.mode = mode
 		self.orthogonal_map = orthogonal_map
 		self.use_trivialization = bool(use_trivialization)
+		self.stop_gradient = resolve_stop_gradient(stop_gradient, default=False)
 		self.block_widths = block_widths_from_nesting_list(self.nesting_list)
 
 		self.classifiers = nn.ModuleList()
@@ -253,7 +281,9 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		prefixes = [prefix]
 		logits = [self.classifiers[0](prefix)]
 		for i, block in enumerate(blocks[1:]):
-			previous_prefix = self.prefix_orthogonal_layers[i](prefix.detach())
+			previous_prefix = self.prefix_orthogonal_layers[i](
+				maybe_stop_gradient(prefix, self.stop_gradient)
+			)
 			prefix = torch.cat([previous_prefix, block], dim=1)
 			prefixes.append(prefix)
 			logits.append(self.classifiers[i + 1](prefix))

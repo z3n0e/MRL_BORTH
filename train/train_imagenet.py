@@ -74,7 +74,8 @@ Section('model', 'model details').params(
     bor_block_mrl=Param(int, 'Use independent-block Block-Orthogonal Residual MRL? (1/0)', default=0),
     bor_mode=Param(And(str, OneOf(['orthogonal', 'frozen'])), 'BOR block transform mode', default='orthogonal'),
     bor_orthogonal_map=Param(And(str, OneOf(['matrix_exp', 'cayley', 'householder'])), 'BOR orthogonal parametrization map', default='matrix_exp'),
-    bor_use_trivialization=Param(int, 'Use dynamic trivialization for BOR orthogonal maps? (1/0)', default=1)
+    bor_use_trivialization=Param(int, 'Use dynamic trivialization for BOR orthogonal maps? (1/0)', default=1),
+    bor_stop_gradient=Param(And(int, OneOf([-1, 0, 1])), 'Stop gradients before BOR orthogonal maps? (0 off, 1 on, -1 class default)', default=0)
 )
 
 Section('resolution', 'resolution scheduling').params(
@@ -519,8 +520,10 @@ class ImageNetTrainer:
     @param('model.bor_mode')
     @param('model.bor_orthogonal_map')
     @param('model.bor_use_trivialization')
+    @param('model.bor_stop_gradient')
     def create_model_and_scaler(self, arch, pretrained, distributed, use_blurpool,
-                                bor_mode, bor_orthogonal_map, bor_use_trivialization):
+                                bor_mode, bor_orthogonal_map, bor_use_trivialization,
+                                bor_stop_gradient):
         '''
         Nesting Start is just the log_2 {smallest dim} unit. In our work we used powers of two, however this part can be changed easily. 
         If we do not want to use MRL, we just keep both the efficient and mrl flags to 0
@@ -540,6 +543,7 @@ class ImageNetTrainer:
                 mode=bor_mode,
                 orthogonal_map=bor_orthogonal_map,
                 use_trivialization=bool(bor_use_trivialization),
+                stop_gradient=resolve_stop_gradient_override(bor_stop_gradient),
             )
         elif self.bor_block_mrl:
             print("Creating classification layer of type :\t BOR-MRL (independent residual blocks)")
@@ -549,6 +553,7 @@ class ImageNetTrainer:
                 mode=bor_mode,
                 orthogonal_map=bor_orthogonal_map,
                 use_trivialization=bool(bor_use_trivialization),
+                stop_gradient=resolve_stop_gradient_override(bor_stop_gradient),
             )
         elif self.nesting:
             ff= "MRL-E" if self.efficient else "MRL"

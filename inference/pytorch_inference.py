@@ -120,6 +120,7 @@ parser.add_argument('--bor_block_mrl', action='store_true', help='Use independen
 parser.add_argument('--bor_mode', type=str, choices=['orthogonal', 'frozen'], default='orthogonal', help='BOR block transform mode')
 parser.add_argument('--bor_orthogonal_map', type=str, choices=['matrix_exp', 'cayley', 'householder'], default='matrix_exp', help='BOR orthogonal parametrization map')
 parser.add_argument('--bor_use_trivialization', type=int, default=1, help='Use dynamic trivialization for BOR orthogonal maps')
+parser.add_argument('--bor_stop_gradient', type=int, choices=[-1, 0, 1], default=0, help='Stop gradients before BOR orthogonal maps? 0 off, 1 on, -1 class default')
 # dataset/eval args
 parser.add_argument('--tta', action='store_true', help='Test Time Augmentation Flag')
 parser.add_argument('--dataset', type=str, default='V1', help='Benchmarks: V1/V2/A/Sketch/R/CIFAR100')
@@ -157,6 +158,7 @@ if args.bor_mrl:
 		mode=args.bor_mode,
 		orthogonal_map=args.bor_orthogonal_map,
 		use_trivialization=bool(args.bor_use_trivialization),
+		stop_gradient=resolve_stop_gradient_override(args.bor_stop_gradient),
 	)
 elif args.bor_block_mrl:
 	model.fc = IndependentBlockOrthogonalMRLHead(
@@ -165,6 +167,7 @@ elif args.bor_block_mrl:
 		mode=args.bor_mode,
 		orthogonal_map=args.bor_orthogonal_map,
 		use_trivialization=bool(args.bor_use_trivialization),
+		stop_gradient=resolve_stop_gradient_override(args.bor_stop_gradient),
 	)
 elif not args.old_ckpt:
 	if args.mrl:
@@ -258,6 +261,7 @@ if not args.retrieval:
 		'bor_mode': args.bor_mode,
 		'bor_orthogonal_map': args.bor_orthogonal_map,
 		'bor_use_trivialization': bool(args.bor_use_trivialization),
+		'bor_stop_gradient': resolve_stop_gradient_override(args.bor_stop_gradient),
 		'efficient': bool(args.efficient),
 		'rep_size': int(args.rep_size),
 		'tta': bool(args.tta),

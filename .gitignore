@@ -5,3 +5,4 @@ retrieval/.ipynb_checkpoints/
 __pycache__/
 data/
 cifar100_runs/
+imagenet_runs/

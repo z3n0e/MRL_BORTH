@@ -84,6 +84,7 @@ python train_imagenet.py \
   --model.bor_mode=orthogonal \
   --model.bor_orthogonal_map=matrix_exp \
   --model.bor_use_trivialization=1 \
+  --model.bor_stop_gradient=0 \
   --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
@@ -95,6 +96,7 @@ python train_imagenet.py \
   --config-file rn50_configs/rn50_cifar100.yaml \
   --model.bor_mrl=1 \
   --model.bor_mode=frozen \
+  --model.bor_stop_gradient=0 \
   --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
@@ -110,6 +112,7 @@ python train_imagenet.py \
   --model.bor_mode=orthogonal \
   --model.bor_orthogonal_map=matrix_exp \
   --model.bor_use_trivialization=1 \
+  --model.bor_stop_gradient=0 \
   --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
@@ -124,6 +127,7 @@ python train_imagenet.py \
   --model.bor_mrl=1 \
   --model.bor_mode=orthogonal \
   --model.bor_orthogonal_map=cayley \
+  --model.bor_stop_gradient=0 \
   --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
@@ -136,6 +140,7 @@ python train_imagenet.py \
   --model.bor_mrl=1 \
   --model.bor_mode=orthogonal \
   --model.bor_orthogonal_map=householder \
+  --model.bor_stop_gradient=0 \
   --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
@@ -151,12 +156,15 @@ python pytorch_inference.py \
   --data_root /path/to/cifar100/root \
   --bor_mrl \
   --bor_mode orthogonal \
-  --bor_orthogonal_map matrix_exp
+  --bor_orthogonal_map matrix_exp \
+  --bor_stop_gradient 0
 ```
 
 For frozen orthogonal transforms, pass `--bor_mode frozen`. For Cayley or Householder, pass the matching `--bor_orthogonal_map`.
 
 To evaluate the independent-block variant, replace `--bor_mrl` with `--bor_block_mrl`.
+
+For BOR stop-gradient ablations, use `--model.bor_stop_gradient=1` or `--model.bor_stop_gradient=0` during training. The inference flag is `--bor_stop_gradient`; the default is off.
 
 ## 11. Evaluate MRL
 

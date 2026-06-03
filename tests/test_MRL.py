@@ -301,6 +301,134 @@ def test_independent_block_bor_mrl_backward():
 	assert torch.isfinite(x.grad).all()
 
 
+def test_bor_mrl_stop_gradient_blocks_larger_loss_from_earlier_prefix():
+	head = BlockOrthogonalResidualMRLHead(
+		[2, 4],
+		num_classes=3,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+		stop_gradient=True,
+	)
+	with torch.no_grad():
+		head.classifiers[-1].weight.fill_(1.0)
+		head.classifiers[-1].bias.zero_()
+
+	x = torch.randn(5, 4, requires_grad=True)
+	loss = head(x)[-1].sum()
+	loss.backward()
+
+	assert x.grad is not None
+	assert torch.allclose(x.grad[:, :2], torch.zeros_like(x.grad[:, :2]))
+	assert x.grad[:, 2:].abs().sum() > 0
+
+
+def test_bor_mrl_stop_gradient_can_be_disabled():
+	head = BlockOrthogonalResidualMRLHead(
+		[2, 4],
+		num_classes=3,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+		stop_gradient=False,
+	)
+	with torch.no_grad():
+		head.classifiers[-1].weight.fill_(1.0)
+		head.classifiers[-1].bias.zero_()
+
+	x = torch.randn(5, 4, requires_grad=True)
+	loss = head(x)[-1].sum()
+	loss.backward()
+
+	assert x.grad is not None
+	assert x.grad[:, :2].abs().sum() > 0
+	assert x.grad[:, 2:].abs().sum() > 0
+
+
+def test_bor_mrl_stop_gradient_defaults_to_disabled():
+	head = BlockOrthogonalResidualMRLHead(
+		[2, 4],
+		num_classes=3,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+	)
+	with torch.no_grad():
+		head.classifiers[-1].weight.fill_(1.0)
+		head.classifiers[-1].bias.zero_()
+
+	x = torch.randn(5, 4, requires_grad=True)
+	loss = head(x)[-1].sum()
+	loss.backward()
+
+	assert not head.stop_gradient
+	assert x.grad is not None
+	assert x.grad[:, :2].abs().sum() > 0
+	assert x.grad[:, 2:].abs().sum() > 0
+
+
+def test_independent_block_stop_gradient_can_be_enabled():
+	head = IndependentBlockOrthogonalMRLHead(
+		[2, 4],
+		num_classes=3,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+		stop_gradient=True,
+	)
+	with torch.no_grad():
+		head.classifiers[-1].weight.fill_(1.0)
+		head.classifiers[-1].bias.zero_()
+
+	x = torch.randn(5, 4, requires_grad=True)
+	loss = head(x)[-1].sum()
+	loss.backward()
+
+	assert x.grad is None
+	assert any(
+		param.grad is not None
+		for block in head.block_transform.blocks
+		for param in block.parameters()
+		if param.requires_grad
+	)
+
+
+def test_independent_block_stop_gradient_can_be_disabled():
+	head = IndependentBlockOrthogonalMRLHead(
+		[2, 4],
+		num_classes=3,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+		stop_gradient=False,
+	)
+	with torch.no_grad():
+		head.classifiers[-1].weight.fill_(1.0)
+		head.classifiers[-1].bias.zero_()
+
+	x = torch.randn(5, 4, requires_grad=True)
+	loss = head(x)[-1].sum()
+	loss.backward()
+
+	assert x.grad is not None
+	assert x.grad.abs().sum() > 0
+
+
+def test_independent_block_stop_gradient_defaults_to_disabled():
+	head = IndependentBlockOrthogonalMRLHead(
+		[2, 4],
+		num_classes=3,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+	)
+	with torch.no_grad():
+		head.classifiers[-1].weight.fill_(1.0)
+		head.classifiers[-1].bias.zero_()
+
+	x = torch.randn(5, 4, requires_grad=True)
+	loss = head(x)[-1].sum()
+	loss.backward()
+
+	assert not head.stop_gradient
+	assert x.grad is not None
+	assert x.grad.abs().sum() > 0
+
+
 def test_retrieval_metrics_use_database_relevant_counts():
 	db_labels = np.array([0, 0, 1, 1, 1, 2])
 	query_labels = np.array([0, 1, 2])

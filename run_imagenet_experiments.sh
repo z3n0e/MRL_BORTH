@@ -48,7 +48,7 @@ RUN_MRL=${RUN_MRL:-0}
 RUN_MRLE=${RUN_MRLE:-0}
 RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-0}
 RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-0}
-RUN_BOR_MRL=${RUN_BOR_MRL:-1}
+RUN_BOR_MRL=${RUN_BOR_MRL:-0}
 RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-0}
 RUN_BOR_MRL_FROZEN=${RUN_BOR_MRL_FROZEN:-0}
 RUN_BOR_MRL_CAYLEY=${RUN_BOR_MRL_CAYLEY:-0}
@@ -58,6 +58,7 @@ FIXED_FEATURE_DIMS=${FIXED_FEATURE_DIMS:-512}
 # BOR-MRL knobs.
 BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-matrix_exp}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
+BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-1}
 
 TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
 EVAL_DIR="$EXPERIMENT_DIR/eval"
@@ -99,6 +100,7 @@ write_manifest() {
         echo "run_bor_mrl_householder=$RUN_BOR_MRL_HOUSEHOLDER"
         echo "bor_orthogonal_map=$BOR_ORTHOGONAL_MAP"
         echo "bor_use_trivialization=$BOR_USE_TRIVIALIZATION"
+        echo "bor_stop_gradient=$BOR_STOP_GRADIENT"
     } > "$EXPERIMENT_DIR/manifest.txt"
 }
 
@@ -194,12 +196,14 @@ if [[ "$RUN_BOR_MRL" == "1" ]]; then
         --model.bor_mrl=1 \
         --model.bor_mode=orthogonal \
         --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
-        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION"
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION" \
+        --model.bor_stop_gradient="$BOR_STOP_GRADIENT"
     eval_run bor_mrl \
         --bor_mrl \
         --bor_mode orthogonal \
         --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
-        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+        --bor_stop_gradient "$BOR_STOP_GRADIENT"
 fi
 
 if [[ "$RUN_BOR_BLOCK_MRL" == "1" ]]; then
@@ -207,21 +211,25 @@ if [[ "$RUN_BOR_BLOCK_MRL" == "1" ]]; then
         --model.bor_block_mrl=1 \
         --model.bor_mode=orthogonal \
         --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
-        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION"
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION" \
+        --model.bor_stop_gradient="$BOR_STOP_GRADIENT"
     eval_run bor_block_mrl \
         --bor_block_mrl \
         --bor_mode orthogonal \
         --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
-        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+        --bor_stop_gradient "$BOR_STOP_GRADIENT"
 fi
 
 if [[ "$RUN_BOR_MRL_FROZEN" == "1" ]]; then
     train_run bor_mrl_frozen \
         --model.bor_mrl=1 \
-        --model.bor_mode=frozen
+        --model.bor_mode=frozen \
+        --model.bor_stop_gradient="$BOR_STOP_GRADIENT"
     eval_run bor_mrl_frozen \
         --bor_mrl \
-        --bor_mode frozen
+        --bor_mode frozen \
+        --bor_stop_gradient "$BOR_STOP_GRADIENT"
 fi
 
 if [[ "$RUN_BOR_MRL_CAYLEY" == "1" ]]; then
@@ -229,12 +237,14 @@ if [[ "$RUN_BOR_MRL_CAYLEY" == "1" ]]; then
         --model.bor_mrl=1 \
         --model.bor_mode=orthogonal \
         --model.bor_orthogonal_map=cayley \
-        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION"
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION" \
+        --model.bor_stop_gradient="$BOR_STOP_GRADIENT"
     eval_run bor_mrl_cayley \
         --bor_mrl \
         --bor_mode orthogonal \
         --bor_orthogonal_map cayley \
-        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+        --bor_stop_gradient "$BOR_STOP_GRADIENT"
 fi
 
 if [[ "$RUN_BOR_MRL_HOUSEHOLDER" == "1" ]]; then
@@ -242,12 +252,14 @@ if [[ "$RUN_BOR_MRL_HOUSEHOLDER" == "1" ]]; then
         --model.bor_mrl=1 \
         --model.bor_mode=orthogonal \
         --model.bor_orthogonal_map=householder \
-        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION"
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION" \
+        --model.bor_stop_gradient="$BOR_STOP_GRADIENT"
     eval_run bor_mrl_householder \
         --bor_mrl \
         --bor_mode orthogonal \
         --bor_orthogonal_map householder \
-        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+        --bor_stop_gradient "$BOR_STOP_GRADIENT"
 fi
 
 if [[ "$RUN_FULL_FEATURE" == "1" ]]; then

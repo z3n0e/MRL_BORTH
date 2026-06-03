@@ -18,6 +18,7 @@ model:
   bor_mode: orthogonal
   bor_orthogonal_map: matrix_exp
   bor_use_trivialization: 1
+  bor_stop_gradient: 0
 resolution:
   end_ramp: 0
   max_res: 32

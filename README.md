@@ -56,6 +56,8 @@ A single full-feature orthogonal layer would be mathematically wrong for Matryos
 
 The repository also includes the earlier independent-block variant behind `--model.bor_block_mrl=1`. That method transforms every residual coordinate block separately, then applies the MRL classifiers to prefixes of the transformed vector. With `[8, 16, 32]`, it builds `[Q_8 h[:8], Q_8' h[8:16], Q_16 h[16:32]]` and classifies the 8, 16, and 32 dimensional prefixes of that transformed vector.
 
+Stop-gradient before BOR orthogonal maps is controlled by `--model.bor_stop_gradient`. The default is `0`, meaning off for every BOR method. Use `1` to turn it on; `-1` is accepted as "use the class default", which is also off.
+
 Example CIFAR-100 run:
 
 ```bash
@@ -67,6 +69,7 @@ python train_imagenet.py \
   --model.bor_mode=orthogonal \
   --model.bor_orthogonal_map=matrix_exp \
   --model.bor_use_trivialization=1 \
+  --model.bor_stop_gradient=0 \
   --logging.folder=./tmp \
   --logging.run_name=bor_mrl_cifar100
 ```

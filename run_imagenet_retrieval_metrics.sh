@@ -55,6 +55,7 @@ USE_GPU=${USE_GPU:-1}
 REBUILD_INDEX=${REBUILD_INDEX:-0}
 FORCE_ARRAYS=${FORCE_ARRAYS:-0}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
+BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-0}
 
 mkdir -p "$RETRIEVAL_ROOT" "$METRICS_DIR"
 
@@ -66,6 +67,7 @@ echo "Summary CSV: $SUMMARY_CSV"
 echo "Index type: $INDEX_TYPE"
 echo "Neighbor shortlist length: $K"
 echo "Metric k values: $SHORTLIST"
+echo "BOR stop gradient: $BOR_STOP_GRADIENT"
 echo
 
 run_method() {
@@ -206,7 +208,8 @@ run_method bor_mrl \
     --bor_mrl \
     --bor_mode orthogonal \
     --bor_orthogonal_map matrix_exp \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+    --bor_stop_gradient "$BOR_STOP_GRADIENT"
 
 run_method bor_block_mrl \
     "$CHECKPOINT_DIR/bor_block_mrl_final_weights.pt" \
@@ -214,7 +217,8 @@ run_method bor_block_mrl \
     --bor_block_mrl \
     --bor_mode orthogonal \
     --bor_orthogonal_map matrix_exp \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+    --bor_stop_gradient "$BOR_STOP_GRADIENT"
 
 run_method bor_mrl_cayley \
     "$CHECKPOINT_DIR/bor_mrl_cayley_final_weights.pt" \
@@ -222,7 +226,8 @@ run_method bor_mrl_cayley \
     --bor_mrl \
     --bor_mode orthogonal \
     --bor_orthogonal_map cayley \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+    --bor_stop_gradient "$BOR_STOP_GRADIENT"
 
 run_method bor_mrl_householder \
     "$CHECKPOINT_DIR/bor_mrl_householder_final_weights.pt" \
@@ -230,13 +235,15 @@ run_method bor_mrl_householder \
     --bor_mrl \
     --bor_mode orthogonal \
     --bor_orthogonal_map householder \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION"
+    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+    --bor_stop_gradient "$BOR_STOP_GRADIENT"
 
 run_method bor_mrl_frozen \
     "$CHECKPOINT_DIR/bor_mrl_frozen_final_weights.pt" \
     bor_mrl_frozen 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
     --bor_mrl \
-    --bor_mode frozen
+    --bor_mode frozen \
+    --bor_stop_gradient "$BOR_STOP_GRADIENT"
 
 "$PYTHON" - "$METRICS_DIR" "$SUMMARY_CSV" <<'PY'
 import csv
