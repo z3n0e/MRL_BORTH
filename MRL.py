@@ -67,6 +67,83 @@ def resolve_stop_gradient(value, default):
 	return bool(value)
 
 
+def make_orthogonal_linear_layer(dim, mode="orthogonal",
+                                 orthogonal_map="matrix_exp",
+                                 use_trivialization=True):
+	allowed_modes = {"orthogonal", "frozen"}
+	allowed_maps = {"matrix_exp", "cayley", "householder"}
+	if mode not in allowed_modes:
+		raise ValueError(f"mode must be one of {sorted(allowed_modes)}, got {mode!r}")
+	if orthogonal_map not in allowed_maps:
+		raise ValueError(f"orthogonal_map must be one of {sorted(allowed_maps)}, got {orthogonal_map!r}")
+	if mode == "orthogonal" and orthogonal is None:
+		raise RuntimeError(
+			"torch.nn.utils.parametrizations.orthogonal is required "
+			"for mode='orthogonal'"
+		)
+
+	layer = nn.Linear(dim, dim, bias=False)
+	if mode == "frozen":
+		nn.init.orthogonal_(layer.weight)
+		layer.weight.requires_grad_(False)
+		return layer
+
+	with torch.no_grad():
+		layer.weight.copy_(torch.eye(dim))
+	try:
+		return orthogonal(
+			layer,
+			"weight",
+			orthogonal_map=orthogonal_map,
+			use_trivialization=use_trivialization,
+		)
+	except TypeError as exc:
+		raise RuntimeError(
+			"Installed PyTorch does not support the requested "
+			"orthogonal parametrization options. Use a modern "
+			"PyTorch with torch.nn.utils.parametrizations.orthogonal."
+		) from exc
+
+
+class GatedResidualOrthogonalAdapter(nn.Module):
+	def __init__(self, dim, mode="orthogonal",
+	             orthogonal_map="matrix_exp", use_trivialization=True,
+	             alpha_init=-3.0):
+		super().__init__()
+		self.in_features = int(dim)
+		self.out_features = int(dim)
+		self.mode = mode
+		self.orthogonal_map = orthogonal_map
+		self.use_trivialization = bool(use_trivialization)
+		self.orthogonal = make_orthogonal_linear_layer(
+			self.in_features,
+			mode=mode,
+			orthogonal_map=orthogonal_map,
+			use_trivialization=use_trivialization,
+		)
+		self.alpha_logit = nn.Parameter(torch.tensor(float(alpha_init)))
+
+	@property
+	def weight(self):
+		return self.orthogonal.weight
+
+	def alpha(self):
+		return torch.sigmoid(self.alpha_logit)
+
+	def forward(self, x):
+		alpha = self.alpha().to(dtype=x.dtype, device=x.device)
+		rotated = self.orthogonal(x)
+		return (1.0 - alpha) * x + alpha * rotated
+
+	def extra_repr(self):
+		return (
+			f"in_features={self.in_features}, out_features={self.out_features}, "
+			f"mode={self.mode}, orthogonal_map={self.orthogonal_map}, "
+			f"use_trivialization={self.use_trivialization}, "
+			f"alpha={self.alpha().item():.6f}"
+		)
+
+
 class BlockOrthogonalLayer(nn.Module):
 	def __init__(self, nesting_list, mode="orthogonal",
 	             orthogonal_map="matrix_exp", use_trivialization=True,
@@ -95,26 +172,12 @@ class BlockOrthogonalLayer(nn.Module):
 					"for BlockOrthogonalLayer(mode='orthogonal')"
 				)
 			for width in self.block_widths:
-				layer = nn.Linear(width, width, bias=False)
-				if self.mode == "frozen":
-					nn.init.orthogonal_(layer.weight)
-					layer.weight.requires_grad_(False)
-				else:
-					with torch.no_grad():
-						layer.weight.copy_(torch.eye(width))
-					try:
-						layer = orthogonal(
-							layer,
-							"weight",
-							orthogonal_map=self.orthogonal_map,
-							use_trivialization=self.use_trivialization,
-						)
-					except TypeError as exc:
-						raise RuntimeError(
-							"Installed PyTorch does not support the requested "
-							"orthogonal parametrization options. Use a modern "
-							"PyTorch with torch.nn.utils.parametrizations.orthogonal."
-						) from exc
+				layer = make_orthogonal_linear_layer(
+					width,
+					mode=self.mode,
+					orthogonal_map=self.orthogonal_map,
+					use_trivialization=self.use_trivialization,
+				)
 				self.blocks.append(layer)
 
 	def get_block_widths(self):
@@ -213,7 +276,8 @@ class IndependentBlockOrthogonalMRLHead(nn.Module):
 class BlockOrthogonalResidualMRLHead(nn.Module):
 	def __init__(self, nesting_list, num_classes, mode="orthogonal",
 	             orthogonal_map="matrix_exp", use_trivialization=True,
-	             stop_gradient=False):
+	             stop_gradient=False, bor_residual_orthogonal=False,
+	             bor_residual_alpha_init=-3.0):
 		super().__init__()
 		self.nesting_list = [int(dim) for dim in nesting_list]
 		self.num_classes = int(num_classes)
@@ -233,6 +297,8 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		self.orthogonal_map = orthogonal_map
 		self.use_trivialization = bool(use_trivialization)
 		self.stop_gradient = resolve_stop_gradient(stop_gradient, default=False)
+		self.bor_residual_orthogonal = bool(bor_residual_orthogonal)
+		self.bor_residual_alpha_init = float(bor_residual_alpha_init)
 		self.block_widths = block_widths_from_nesting_list(self.nesting_list)
 
 		self.classifiers = nn.ModuleList()
@@ -242,26 +308,21 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		self.prefix_orthogonal_layers = nn.ModuleList()
 		if self.mode in {"orthogonal", "frozen"}:
 			for dim in self.nesting_list[:-1]:
-				layer = nn.Linear(dim, dim, bias=False)
-				if self.mode == "frozen":
-					nn.init.orthogonal_(layer.weight)
-					layer.weight.requires_grad_(False)
+				if self.bor_residual_orthogonal:
+					layer = GatedResidualOrthogonalAdapter(
+						dim,
+						mode=self.mode,
+						orthogonal_map=self.orthogonal_map,
+						use_trivialization=self.use_trivialization,
+						alpha_init=self.bor_residual_alpha_init,
+					)
 				else:
-					with torch.no_grad():
-						layer.weight.copy_(torch.eye(dim))
-					try:
-						layer = orthogonal(
-							layer,
-							"weight",
-							orthogonal_map=self.orthogonal_map,
-							use_trivialization=self.use_trivialization,
-						)
-					except TypeError as exc:
-						raise RuntimeError(
-							"Installed PyTorch does not support the requested "
-							"orthogonal parametrization options. Use a modern "
-							"PyTorch with torch.nn.utils.parametrizations.orthogonal."
-						) from exc
+					layer = make_orthogonal_linear_layer(
+						dim,
+						mode=self.mode,
+						orthogonal_map=self.orthogonal_map,
+						use_trivialization=self.use_trivialization,
+					)
 				self.prefix_orthogonal_layers.append(layer)
 
 		self.last_z = None
@@ -306,6 +367,11 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		if self.last_blocks is None:
 			raise RuntimeError("block_norms() requires a previous forward pass")
 		return torch.stack([block.norm(p=2, dim=1).mean() for block in self.last_blocks])
+
+	def alpha_values(self):
+		if not self.bor_residual_orthogonal:
+			return None
+		return torch.stack([layer.alpha() for layer in self.prefix_orthogonal_layers])
 
 
 class CascadeStopGradientMRLHead(nn.Module):

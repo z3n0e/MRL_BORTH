@@ -93,7 +93,7 @@ For the cascade stop-gradient ablation, replace `--model.bor_mrl=1` with:
 <img src="./images/mrl-r50-accuracy.jpeg" width="784"/>
 </p>
 
-We use PyTorch Distributed Data Parallel with TorchVision dataloaders. The `rn50_40_epochs.yaml` configuration trains ImageNet ResNet50 models for 40 epochs. While training, we dump model checkpoints and training logs by default.
+Training runs in a single Python process with TorchVision dataloaders. If multiple CUDA devices are visible, the trainer uses `torch.nn.DataParallel`; limit or choose GPUs with `CUDA_VISIBLE_DEVICES`. The `rn50_40_epochs.yaml` configuration trains ImageNet ResNet50 models for 40 epochs. While training, we dump model checkpoints and training logs by default.
 
 ### Training Fixed Feature Baseline
 
@@ -103,7 +103,7 @@ export IMAGENET_DIR=/path/to/imagenet
 
 python train_imagenet.py --config-file rn50_configs/rn50_40_epochs.yaml --model.fixed_feature=2048 \
 --data.root=$IMAGENET_DIR --data.num_workers=12 --logging.folder=trainlogs --logging.log_level=1 \
---dist.world_size=2 --training.distributed=1 --lr.lr=0.425
+--lr.lr=0.425
 ```
 
 ### Training MRL model
@@ -114,7 +114,7 @@ export IMAGENET_DIR=/path/to/imagenet
 
 python train_imagenet.py --config-file rn50_configs/rn50_40_epochs.yaml --model.mrl=1 \
 --data.root=$IMAGENET_DIR --data.num_workers=12 --logging.folder=trainlogs --logging.log_level=1 \
---dist.world_size=2 --training.distributed=1 --lr.lr=0.425
+--lr.lr=0.425
 ```
 
 ### Training MRL-E model
@@ -125,7 +125,7 @@ export IMAGENET_DIR=/path/to/imagenet
 
 python train_imagenet.py --config-file rn50_configs/rn50_40_epochs.yaml --model.efficient=1 \
 --data.root=$IMAGENET_DIR --data.num_workers=12 --logging.folder=trainlogs --logging.log_level=1 \
---dist.world_size=2 --training.distributed=1 --lr.lr=0.425
+--lr.lr=0.425
 ```
 
 By default, we start nesting from rep. size = 8 (i.e. $2^3$). We provide flexibility in starting nesting, for example from rep. size = 16, with the `nesting_start` flag as: 

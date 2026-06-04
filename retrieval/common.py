@@ -13,6 +13,7 @@ MODEL_DIRS = {
     "bor_mrl_frozen": "bor_mrl_frozen",
     "bor_mrl_cayley": "bor_mrl_cayley",
     "bor_mrl_householder": "bor_mrl_householder",
+    "bor_mrl_residual": "bor_mrl_residual",
 }
 
 MODEL_ALIASES = {
@@ -39,6 +40,10 @@ MODEL_ALIASES = {
     "bor-mrl-cayley": "bor_mrl_cayley",
     "bor_mrl_householder": "bor_mrl_householder",
     "bor-mrl-householder": "bor_mrl_householder",
+    "bor_mrl_residual": "bor_mrl_residual",
+    "bor-mrl-residual": "bor_mrl_residual",
+    "bor_residual_mrl": "bor_mrl_residual",
+    "bor-residual-mrl": "bor_mrl_residual",
 }
 
 

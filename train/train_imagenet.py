@@ -4,15 +4,12 @@ ResNet training entry point modified for MRL.
 import sys 
 sys.path.append("../") # adding root folder to the path
 
-import multiprocessing as mp
 import os
 import torch as ch
 from torch.utils.data import DataLoader
-from torch.utils.data.distributed import DistributedSampler
 from torch.cuda.amp import GradScaler
 from torch.cuda.amp import autocast
 import torch.nn.functional as F
-import torch.distributed as dist
 ch.backends.cudnn.benchmark = True
 ch.autograd.profiler.emit_nvtx(False)
 ch.autograd.profiler.profile(False)
@@ -37,26 +34,6 @@ from fastargs.validation import And, OneOf
 
 from MRL import *
 
-def configure_multiprocessing_start_method():
-    if sys.version_info < (3, 14) or os.name != 'posix' or sys.platform == 'darwin':
-        return
-
-    start_method = os.environ.get('MRL_MULTIPROCESSING_START_METHOD', 'fork')
-    if not start_method:
-        return
-    if start_method not in mp.get_all_start_methods():
-        raise ValueError(
-            f"Unsupported MRL_MULTIPROCESSING_START_METHOD={start_method!r}. "
-            f"Available methods: {mp.get_all_start_methods()}"
-        )
-
-    current = mp.get_start_method(allow_none=True)
-    if current != start_method:
-        mp.set_start_method(start_method, force=True)
-
-
-configure_multiprocessing_start_method()
-
 def seed_worker(worker_id):
     worker_seed = ch.initial_seed() % 2**32
     np.random.seed(worker_seed)
@@ -77,6 +54,8 @@ Section('model', 'model details').params(
     bor_orthogonal_map=Param(And(str, OneOf(['matrix_exp', 'cayley', 'householder'])), 'BOR orthogonal parametrization map', default='matrix_exp'),
     bor_use_trivialization=Param(int, 'Use dynamic trivialization for BOR orthogonal maps? (1/0)', default=1),
     bor_stop_gradient=Param(And(int, OneOf([-1, 0, 1])), 'Stop gradients before BOR orthogonal maps? (0 off, 1 on, -1 class default)', default=0),
+    bor_residual_orthogonal=Param(int, 'Use gated residual orthogonal adapter for recursive BOR prefixes? (1/0)', default=0),
+    bor_residual_alpha_init=Param(float, 'Initial logit for gated residual BOR alpha', default=-3.0),
     cascade_stop_gradient=Param(And(int, OneOf([-1, 0, 1])), 'Stop gradients between cascade prefixes? (0 off, 1 on, -1 class default)', default=-1)
 )
 
@@ -124,16 +103,9 @@ Section('training', 'training hyper param stuff').params(
     weight_decay=Param(float, 'weight decay', default=4e-5),
     epochs=Param(int, 'number of epochs', default=30),
     label_smoothing=Param(float, 'label smoothing parameter', default=0.1),
-    distributed=Param(int, 'is distributed?', default=0),
     use_blurpool=Param(int, 'use blurpool?', default=0),
     seed=Param(int, 'random seed for reproducible training', default=0),
     deterministic=Param(int, 'enable deterministic PyTorch/CUDA behavior? (1/0)', default=0)
-)
-
-Section('dist', 'distributed training options').params(
-    world_size=Param(int, 'number gpus', default=1),
-    address=Param(str, 'address', default='localhost'),
-    port=Param(str, 'port', default='12355')
 )
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -210,7 +182,6 @@ class BlurPoolConv2d(ch.nn.Module):
         return self.conv.forward(blurred)
 
 class ImageNetTrainer:
-    @param('training.distributed')
     @param('model.efficient')
     @param('model.mrl')
     @param('model.bor_mrl')
@@ -221,15 +192,16 @@ class ImageNetTrainer:
     @param('data.dataset')
     @param('training.seed')
     @param('training.deterministic')
-    def __init__(self, gpu, distributed, efficient, mrl, bor_mrl, bor_block_mrl,
+    def __init__(self, efficient, mrl, bor_mrl, bor_block_mrl,
                  cascade_stop_gradient_mrl,
                  nesting_start, fixed_feature,
                  dataset, seed, deterministic):
         self.all_params = get_current_config(); 
-        self.gpu = gpu
         self.seed = seed
         self.deterministic = deterministic
         set_reproducibility(seed, deterministic)
+        self.device = ch.device('cuda' if ch.cuda.is_available() else 'cpu')
+        self.num_gpus = ch.cuda.device_count() if self.device.type == 'cuda' else 0
         self.efficient = efficient
         self.bor_mrl = bool(bor_mrl)
         self.bor_block_mrl = bool(bor_block_mrl)
@@ -255,12 +227,7 @@ class ImageNetTrainer:
         self.dataset = dataset
         self.dataset_config = DATASET_CONFIGS[dataset]
         self.num_classes = self.dataset_config['num_classes']
-        self.device = ch.device(f'cuda:{gpu}')
         self.uid = str(uuid4())
-
-
-        if distributed:
-            self.setup_distributed()
 
         self.train_loader = self.create_train_loader()
         self.val_loader = self.create_val_loader()
@@ -268,19 +235,6 @@ class ImageNetTrainer:
         self.create_optimizer()
         self.initialize_logger()
         
-
-    @param('dist.address')
-    @param('dist.port')
-    @param('dist.world_size')
-    def setup_distributed(self, address, port, world_size):
-        os.environ['MASTER_ADDR'] = address
-        os.environ['MASTER_PORT'] = port
-
-        dist.init_process_group("nccl", rank=self.gpu, world_size=world_size)
-        ch.cuda.set_device(self.gpu)
-
-    def cleanup_distributed(self):
-        dist.destroy_process_group()
 
     @param('lr.lr_schedule_type')
     def get_lr(self, epoch, lr_schedule_type):
@@ -343,15 +297,14 @@ class ImageNetTrainer:
         return Path(root).expanduser()
 
     def _make_loader(self, dataset, batch_size, num_workers, pin_memory,
-                     prefetch_factor, is_train, sampler, seed):
+                     prefetch_factor, is_train, seed):
         generator = ch.Generator()
         generator.manual_seed(seed)
 
         kwargs = {
             'dataset': dataset,
             'batch_size': batch_size,
-            'shuffle': is_train and sampler is None,
-            'sampler': sampler,
+            'shuffle': is_train,
             'num_workers': num_workers,
             'pin_memory': bool(pin_memory),
             'persistent_workers': num_workers > 0,
@@ -364,15 +317,11 @@ class ImageNetTrainer:
 
         return DataLoader(**kwargs)
 
-    def _cifar100_dataset(self, root, train, transform, distributed):
+    def _cifar100_dataset(self, root, train, transform):
         root = self._dataset_root(root)
-        if distributed and self.gpu != 0:
-            dist.barrier()
         dataset = datasets.CIFAR100(root=str(root), train=train,
-                                    download=not distributed or self.gpu == 0,
+                                    download=True,
                                     transform=transform)
-        if distributed and self.gpu == 0:
-            dist.barrier()
         return dataset
 
     def _imagenet_dataset(self, root, split, transform):
@@ -389,10 +338,9 @@ class ImageNetTrainer:
     @param('data.pin_memory')
     @param('data.prefetch_factor')
     @param('training.batch_size')
-    @param('training.distributed')
     @param('training.seed')
     def create_train_loader(self, root, num_workers, pin_memory, prefetch_factor,
-                            batch_size, distributed, seed):
+                            batch_size, seed):
         res = self.get_resolution(epoch=0)
         self.train_resolution = res
 
@@ -404,8 +352,7 @@ class ImageNetTrainer:
                 v2.ToDtype(ch.float32, scale=True),
                 v2.Normalize(CIFAR100_MEAN, CIFAR100_STD)
             ])
-            dataset = self._cifar100_dataset(root, train=True, transform=transform,
-                                             distributed=distributed)
+            dataset = self._cifar100_dataset(root, train=True, transform=transform)
         else:
             transform = v2.Compose([
                 v2.RandomResizedCrop(res),
@@ -416,11 +363,8 @@ class ImageNetTrainer:
             ])
             dataset = self._imagenet_dataset(root, 'train', transform)
 
-        sampler = DistributedSampler(dataset, shuffle=True, seed=seed) if distributed else None
-        self.train_sampler = sampler
         return self._make_loader(dataset, batch_size, num_workers, pin_memory,
-                                 prefetch_factor, is_train=True, sampler=sampler,
-                                 seed=seed)
+                                 prefetch_factor, is_train=True, seed=seed)
 
     @param('data.root')
     @param('data.num_workers')
@@ -428,10 +372,9 @@ class ImageNetTrainer:
     @param('data.prefetch_factor')
     @param('validation.batch_size')
     @param('validation.resolution')
-    @param('training.distributed')
     @param('training.seed')
     def create_val_loader(self, root, num_workers, pin_memory, prefetch_factor,
-                          batch_size, resolution, distributed, seed):
+                          batch_size, resolution, seed):
         if self.dataset == 'cifar100':
             transforms = []
             if resolution != 32:
@@ -445,8 +388,7 @@ class ImageNetTrainer:
                 v2.Normalize(CIFAR100_MEAN, CIFAR100_STD)
             ])
             dataset = self._cifar100_dataset(root, train=False,
-                                             transform=v2.Compose(transforms),
-                                             distributed=distributed)
+                                             transform=v2.Compose(transforms))
         else:
             resize_size = int(resolution / 0.875)
             transform = v2.Compose([
@@ -458,11 +400,8 @@ class ImageNetTrainer:
             ])
             dataset = self._imagenet_dataset(root, 'val', transform)
 
-        sampler = DistributedSampler(dataset, shuffle=False, seed=seed) if distributed else None
-        self.val_sampler = sampler
         return self._make_loader(dataset, batch_size, num_workers, pin_memory,
-                                 prefetch_factor, is_train=False, sampler=sampler,
-                                 seed=seed)
+                                 prefetch_factor, is_train=False, seed=seed)
 
     @param('training.epochs')
     @param('logging.log_level')
@@ -488,11 +427,8 @@ class ImageNetTrainer:
         self.save_checkpoint('final_weights.pt', epoch=epoch)
 
     def save_checkpoint(self, filename, epoch=None):
-        if self.gpu != 0:
-            return
-
         checkpoint_path = self.log_folder / filename
-        ch.save(self.model.state_dict(), checkpoint_path)
+        ch.save(self.base_model().state_dict(), checkpoint_path)
         metadata = {
             'checkpoint': filename,
             'epoch': epoch,
@@ -500,6 +436,37 @@ class ImageNetTrainer:
         }
         with open(self.log_folder / f'{filename}.json', 'w') as handle:
             json.dump(metadata, handle, indent=2)
+
+    def base_model(self):
+        return self.model.module if hasattr(self.model, 'module') else self.model
+
+    def load_model_state(self, path):
+        state_dict = ch.load(path, map_location=self.device)
+        if any(key.startswith('module.') for key in state_dict.keys()):
+            state_dict = {
+                key.removeprefix('module.'): value
+                for key, value in state_dict.items()
+            }
+        self.base_model().load_state_dict(state_dict)
+
+    def bor_residual_alpha_log_dict(self):
+        model = self.base_model()
+        fc = getattr(model, 'fc', None)
+        if not getattr(fc, 'bor_residual_orthogonal', False):
+            return {}
+
+        alphas = fc.alpha_values()
+        if alphas is None:
+            return {}
+
+        alpha_values = alphas.detach().float().cpu().tolist()
+        log_dict = {
+            f'bor_residual_alpha_{dim}': float(alpha)
+            for dim, alpha in zip(fc.nesting_list[:-1], alpha_values)
+        }
+        if alpha_values:
+            log_dict['bor_residual_alpha_mean'] = float(np.mean(alpha_values))
+        return log_dict
 
     def eval_and_log(self, extra_dict={}):
         start_val = time.time()
@@ -509,32 +476,34 @@ class ImageNetTrainer:
             stats = self.val_loop()
         val_time = time.time() - start_val
 
-        if self.gpu == 0:
-            d = {
-                'current_lr': self.optimizer.param_groups[0]['lr'], 'val_time': val_time
-            }
-            for k in stats.keys():
-                if k=='loss':
-                    continue
-                else:
-                    d[k]=stats[k]
+        d = {
+            'current_lr': self.optimizer.param_groups[0]['lr'], 'val_time': val_time
+        }
+        d.update(self.bor_residual_alpha_log_dict())
+        for k in stats.keys():
+            if k=='loss':
+                continue
+            else:
+                d[k]=stats[k]
 
-            self.log(dict(d, **extra_dict))
+        self.log(dict(d, **extra_dict))
 
         return stats
 
     @param('model.arch')
     @param('model.pretrained')
-    @param('training.distributed')
     @param('training.use_blurpool') # Later Arguments for nesting/fixed_feat
     @param('model.bor_mode')
     @param('model.bor_orthogonal_map')
     @param('model.bor_use_trivialization')
     @param('model.bor_stop_gradient')
+    @param('model.bor_residual_orthogonal')
+    @param('model.bor_residual_alpha_init')
     @param('model.cascade_stop_gradient')
-    def create_model_and_scaler(self, arch, pretrained, distributed, use_blurpool,
+    def create_model_and_scaler(self, arch, pretrained, use_blurpool,
                                 bor_mode, bor_orthogonal_map, bor_use_trivialization,
-                                bor_stop_gradient, cascade_stop_gradient):
+                                bor_stop_gradient, bor_residual_orthogonal,
+                                bor_residual_alpha_init, cascade_stop_gradient):
         '''
         Nesting Start is just the log_2 {smallest dim} unit. In our work we used powers of two, however this part can be changed easily. 
         If we do not want to use MRL, we just keep both the efficient and mrl flags to 0
@@ -543,7 +512,7 @@ class ImageNetTrainer:
         NOTE: Blurpool follows the original training recipe.
         '''
 
-        scaler = GradScaler()
+        scaler = GradScaler(enabled=self.device.type == 'cuda')
         model = getattr(models, arch)(pretrained=pretrained)
 
         if self.bor_mrl:
@@ -555,6 +524,8 @@ class ImageNetTrainer:
                 orthogonal_map=bor_orthogonal_map,
                 use_trivialization=bool(bor_use_trivialization),
                 stop_gradient=resolve_stop_gradient_override(bor_stop_gradient),
+                bor_residual_orthogonal=bool(bor_residual_orthogonal),
+                bor_residual_alpha_init=bor_residual_alpha_init,
             )
         elif self.cascade_stop_gradient_mrl:
             print("Creating classification layer of type :\t Cascade Stop-Gradient MRL")
@@ -594,8 +565,9 @@ class ImageNetTrainer:
         model = model.to(memory_format=ch.channels_last)
         model = model.to(self.device)
 
-        if distributed:
-            model = ch.nn.parallel.DistributedDataParallel(model, device_ids=[self.gpu])
+        if self.device.type == 'cuda' and self.num_gpus > 1:
+            print(f"Using DataParallel on {self.num_gpus} GPUs")
+            model = ch.nn.DataParallel(model)
 
         return model, scaler
 
@@ -604,8 +576,6 @@ class ImageNetTrainer:
         model = self.model
         model.train()
         losses = []
-        if self.train_sampler is not None:
-            self.train_sampler.set_epoch(epoch)
 
         lr_start, lr_end = self.get_lr(epoch), self.get_lr(epoch + 1)
         iters = len(self.train_loader)
@@ -622,7 +592,7 @@ class ImageNetTrainer:
             images = images.contiguous(memory_format=ch.channels_last)
 
             self.optimizer.zero_grad(set_to_none=True)
-            with autocast():
+            with autocast(enabled=self.device.type == 'cuda'):
                 output = self.model(images)
                 loss_train = self.loss(output, target)
 
@@ -660,7 +630,7 @@ class ImageNetTrainer:
         model.eval()
 
         with ch.no_grad():
-            with autocast():
+            with autocast(enabled=self.device.type == 'cuda'):
                 for images, target in tqdm(self.val_loader):
                     images = images.to(self.device, non_blocking=True)
                     target = target.to(self.device, non_blocking=True)
@@ -690,7 +660,7 @@ class ImageNetTrainer:
         model = self.model
         model.eval()
         with ch.no_grad():
-            with autocast():
+            with autocast(enabled=self.device.type == 'cuda'):
                 for images, target in tqdm(self.val_loader):
                     images = images.to(self.device, non_blocking=True)
                     target = target.to(self.device, non_blocking=True)
@@ -753,24 +723,22 @@ class ImageNetTrainer:
                 'loss': MeanScalarMetric().to(self.device)
             }
 
-        if self.gpu == 0:
-            folder = (Path(folder) / (run_name if run_name else str(self.uid))).absolute()
-            folder.mkdir(parents=True)
+        folder = (Path(folder) / (run_name if run_name else str(self.uid))).absolute()
+        folder.mkdir(parents=True)
 
-            self.log_folder = folder
-            self.start_time = time.time()
+        self.log_folder = folder
+        self.start_time = time.time()
 
-            print(f'=> Logging in {self.log_folder}')
-            params = {
-                '.'.join(k): self.all_params[k] for k in self.all_params.entries.keys()
-            }
+        print(f'=> Logging in {self.log_folder}')
+        params = {
+            '.'.join(k): self.all_params[k] for k in self.all_params.entries.keys()
+        }
 
-            with open(folder / 'params.json', 'w+') as handle:
-                json.dump(params, handle)
+        with open(folder / 'params.json', 'w+') as handle:
+            json.dump(params, handle)
 
     def log(self, content):
         print(f'=> Log: {content}')
-        if self.gpu != 0: return
         cur_time = time.time()
         with open(self.log_folder / 'log', 'a+') as fd:
             fd.write(json.dumps({
@@ -781,42 +749,25 @@ class ImageNetTrainer:
             fd.flush()
 
     @classmethod
-    @param('training.distributed')
-    @param('dist.world_size')
-    def launch_from_args(cls, distributed, world_size):
-        if distributed:
-            ch.multiprocessing.spawn(cls._exec_wrapper, nprocs=world_size, join=True)
-        else:
-            cls.exec(0)
-
-    @classmethod
-    def _exec_wrapper(cls, *args, **kwargs):
-        make_config(quiet=True)
-        cls.exec(*args, **kwargs)
-
-    @classmethod
-    @param('training.distributed')
     @param('training.eval_only')
     @param('training.path')
-    def exec(cls, gpu, distributed, eval_only, path=None):
-        trainer = cls(gpu=gpu)
+    def exec(cls, eval_only, path=None):
+        trainer = cls()
         if eval_only:
-            print("Loading Model....."); ckpt = ch.load(path, map_location="cuda:{}".format(gpu))
-            trainer.model.load_state_dict(ckpt); print("Loading Complete!")
+            print("Loading Model.....")
+            trainer.load_model_state(path)
+            print("Loading Complete!")
             trainer.eval_and_log()
         else:
             trainer.train()
-
-        if distributed:
-            trainer.cleanup_distributed()
 
 # Utils
 class MeanScalarMetric(torchmetrics.Metric):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.add_state('sum', default=ch.tensor(0.), dist_reduce_fx='sum')
-        self.add_state('count', default=ch.tensor(0), dist_reduce_fx='sum')
+        self.add_state('sum', default=ch.tensor(0.))
+        self.add_state('count', default=ch.tensor(0))
 
     def update(self, sample: ch.Tensor):
         self.sum += sample.sum()
@@ -837,4 +788,4 @@ def make_config(quiet=False):
 
 if __name__ == "__main__":
     make_config()
-    ImageNetTrainer.launch_from_args()
+    ImageNetTrainer.exec()

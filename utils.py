@@ -18,7 +18,7 @@ def get_ckpt(path):
 	plain_ckpt={}
 	for k in ckpt.keys():
 		key = k[7:] if k.startswith('module.') else k
-		plain_ckpt[key] = ckpt[k] # remove the 'module' portion of key if model is Pytorch DDP
+		plain_ckpt[key] = ckpt[k] # accept DataParallel/legacy module-prefixed checkpoints
 	return plain_ckpt
 
 

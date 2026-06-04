@@ -155,7 +155,7 @@ Most analysis notebooks are ImageNet-specific because they rely on WordNet and I
 - `evaluate_model_ff` evaluates a fixed-feature classifier.
 - `evaluate_model_nesting` evaluates all MRL nesting sizes.
 - `apply_blurpool` replaces strided convolutions with blur-pool wrappers.
-- `get_ckpt` now loads both DDP checkpoints with `module.` prefixes and regular single-process checkpoints.
+- `get_ckpt` loads both `module.`-prefixed checkpoints and regular single-process checkpoints.
 - `load_from_old_ckpt` supports legacy MRL checkpoint head layouts and now accepts `num_classes`.
 
 ## Tests

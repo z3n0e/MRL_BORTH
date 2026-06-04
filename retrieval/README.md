@@ -3,7 +3,7 @@ The image retrieval pipeline consists of several distinct steps:
 
 ## ResNet50 inference to generate database and query set arrays
 We utilize a native [PyTorch inference](../inference/pytorch_inference.py) to generate the database and query sets for image retrieval. An example for performing 
-retrieval on [ImageNet-4K](../imagenet-4k/README.md) with an MRL pretrained model (trained with PyTorch DDP) is provided below:
+retrieval on [ImageNet-4K](../imagenet-4k/README.md) with an MRL pretrained model is provided below:
 
 ```
 python ../inference/pytorch_inference.py --retrieval --path=path_to_model/final_weights.pt \

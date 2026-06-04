@@ -122,6 +122,8 @@ parser.add_argument('--bor_mode', type=str, choices=['orthogonal', 'frozen'], de
 parser.add_argument('--bor_orthogonal_map', type=str, choices=['matrix_exp', 'cayley', 'householder'], default='matrix_exp', help='BOR orthogonal parametrization map')
 parser.add_argument('--bor_use_trivialization', type=int, default=1, help='Use dynamic trivialization for BOR orthogonal maps')
 parser.add_argument('--bor_stop_gradient', type=int, choices=[-1, 0, 1], default=0, help='Stop gradients before BOR orthogonal maps? 0 off, 1 on, -1 class default')
+parser.add_argument('--bor_residual_orthogonal', type=int, default=0, help='Use gated residual orthogonal adapter for recursive BOR prefixes')
+parser.add_argument('--bor_residual_alpha_init', type=float, default=-3.0, help='Initial logit for gated residual BOR alpha')
 parser.add_argument('--cascade_stop_gradient', type=int, choices=[-1, 0, 1], default=-1, help='Stop gradients between cascade prefixes? 0 off, 1 on, -1 class default')
 # dataset/eval args
 parser.add_argument('--tta', action='store_true', help='Test Time Augmentation Flag')
@@ -166,6 +168,8 @@ if args.bor_mrl:
 		orthogonal_map=args.bor_orthogonal_map,
 		use_trivialization=bool(args.bor_use_trivialization),
 		stop_gradient=resolve_stop_gradient_override(args.bor_stop_gradient),
+		bor_residual_orthogonal=bool(args.bor_residual_orthogonal),
+		bor_residual_alpha_init=args.bor_residual_alpha_init,
 	)
 elif args.cascade_stop_gradient_mrl:
 	model.fc = CascadeStopGradientMRLHead(
@@ -194,7 +198,7 @@ else:
 		model.fc=FixedFeatureLayer(args.rep_size, num_classes)
 
 apply_blurpool(model)	
-model.load_state_dict(get_ckpt(args.path)) # Since our models have a torch DDP wrapper, we modify keys to exclude first 7 chars. 
+model.load_state_dict(get_ckpt(args.path)) # Accept DataParallel/legacy module-prefixed checkpoints.
 model = model.cuda()
 model.eval()
 is_nested_model = args.mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl
@@ -276,6 +280,8 @@ if not args.retrieval:
 		'bor_orthogonal_map': args.bor_orthogonal_map,
 		'bor_use_trivialization': bool(args.bor_use_trivialization),
 		'bor_stop_gradient': resolve_stop_gradient_override(args.bor_stop_gradient),
+		'bor_residual_orthogonal': bool(args.bor_residual_orthogonal),
+		'bor_residual_alpha_init': float(args.bor_residual_alpha_init),
 		'cascade_stop_gradient': resolve_stop_gradient_override(args.cascade_stop_gradient),
 		'efficient': bool(args.efficient),
 		'rep_size': int(args.rep_size),

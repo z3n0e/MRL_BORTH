@@ -4,8 +4,6 @@ data:
   num_workers: 4
   pin_memory: 1
   prefetch_factor: 4
-dist:
-  world_size: 1
 logging:
   folder: ./tmp/
 lr:
@@ -20,6 +18,8 @@ model:
   bor_orthogonal_map: matrix_exp
   bor_use_trivialization: 1
   bor_stop_gradient: 0
+  bor_residual_orthogonal: 0
+  bor_residual_alpha_init: -3.0
   cascade_stop_gradient: -1
 resolution:
   end_ramp: 0
@@ -30,7 +30,6 @@ training:
   batch_size: 256
   bn_wd: 0
   deterministic: 1
-  distributed: 0
   epochs: 40
   label_smoothing: 0.1
   momentum: 0.9

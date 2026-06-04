@@ -8,6 +8,7 @@ from MRL import (
     BlockOrthogonalResidualMRLHead,
     CascadeStopGradientMRLHead,
     FixedFeatureLayer,
+    GatedResidualOrthogonalAdapter,
     IndependentBlockOrthogonalMRLHead,
     Matryoshka_CE_Loss,
     MRL_Linear_Layer,
@@ -242,6 +243,89 @@ def test_bor_mrl_uses_prefix_orthogonal_layers():
 	assert len(head.prefix_orthogonal_layers) == 2
 	assert [layer.in_features for layer in head.prefix_orthogonal_layers] == [8, 16]
 	assert [layer.out_features for layer in head.prefix_orthogonal_layers] == [8, 16]
+
+
+def test_gated_residual_orthogonal_adapter_preserves_shape():
+	adapter = GatedResidualOrthogonalAdapter(
+		8,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+	)
+	x = torch.randn(4, 8)
+	y = adapter(x)
+	assert y.shape == x.shape
+
+
+def test_gated_residual_orthogonal_adapter_alpha_init():
+	adapter = GatedResidualOrthogonalAdapter(
+		8,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+		alpha_init=-3.0,
+	)
+	assert adapter.alpha().item() == pytest.approx(torch.sigmoid(torch.tensor(-3.0)).item())
+
+
+def test_gated_residual_orthogonal_adapter_alpha_gradients_flow():
+	torch.manual_seed(0)
+	adapter = GatedResidualOrthogonalAdapter(
+		8,
+		mode="frozen",
+		alpha_init=-3.0,
+	)
+	x = torch.randn(4, 8)
+	loss = adapter(x).pow(2).sum()
+	loss.backward()
+
+	assert adapter.alpha_logit.grad is not None
+	assert torch.isfinite(adapter.alpha_logit.grad).item()
+	assert adapter.alpha_logit.grad.abs().item() > 0
+
+
+def test_bor_mrl_gated_residual_adapter_integration():
+	head = BlockOrthogonalResidualMRLHead(
+		[8, 16, 32],
+		num_classes=10,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+		bor_residual_orthogonal=True,
+		bor_residual_alpha_init=-3.0,
+	)
+	output = head(torch.randn(5, 32))
+
+	assert isinstance(output, tuple)
+	assert len(output) == 3
+	assert [prefix.shape for prefix in head.last_prefixes] == [(5, 8), (5, 16), (5, 32)]
+	assert all(
+		isinstance(layer, GatedResidualOrthogonalAdapter)
+		for layer in head.prefix_orthogonal_layers
+	)
+	assert head.alpha_values().shape == (2,)
+	for logits in output:
+		assert logits.shape == (5, 10)
+
+
+def test_bor_mrl_hard_orthogonal_still_used_when_residual_flag_disabled():
+	head = BlockOrthogonalResidualMRLHead(
+		[8, 16, 32],
+		num_classes=10,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+		bor_residual_orthogonal=False,
+	)
+	x = torch.randn(6, 32)
+	head(x)
+
+	assert not head.bor_residual_orthogonal
+	assert head.alpha_values() is None
+	assert not any(
+		isinstance(layer, GatedResidualOrthogonalAdapter)
+		for layer in head.prefix_orthogonal_layers
+	)
+	for dim, prefix in zip(head.nesting_list, head.last_prefixes):
+		raw_gram = x[:, :dim] @ x[:, :dim].t()
+		transformed_gram = prefix @ prefix.t()
+		assert torch.allclose(raw_gram, transformed_gram, atol=1e-4, rtol=1e-4)
 
 
 def test_independent_block_bor_mrl_uses_residual_block_layers():

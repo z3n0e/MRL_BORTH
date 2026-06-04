@@ -31,6 +31,7 @@ RUN_MRLE=${RUN_MRLE:-0}
 RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-0}
 RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-0}
 RUN_BOR_MRL=${RUN_BOR_MRL:-0}
+RUN_BOR_MRL_RESIDUAL=${RUN_BOR_MRL_RESIDUAL:-0}
 RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-0}
 RUN_CASCADE_STOP_GRADIENT_MRL=${RUN_CASCADE_STOP_GRADIENT_MRL:-1}
 RUN_BOR_MRL_FROZEN=${RUN_BOR_MRL_FROZEN:-0}
@@ -42,6 +43,7 @@ FIXED_FEATURE_DIMS=${FIXED_FEATURE_DIMS:-"8 16 32 64 128 256 512 1024"}
 BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-matrix_exp}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
 BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-1}
+BOR_RESIDUAL_ALPHA_INIT=${BOR_RESIDUAL_ALPHA_INIT:--3.0}
 CASCADE_STOP_GRADIENT=${CASCADE_STOP_GRADIENT:-1}
 
 TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
@@ -72,6 +74,7 @@ write_manifest() {
         echo "run_full_feature=$RUN_FULL_FEATURE"
         echo "run_fixed_feature=$RUN_FIXED_FEATURE"
         echo "run_bor_mrl=$RUN_BOR_MRL"
+        echo "run_bor_mrl_residual=$RUN_BOR_MRL_RESIDUAL"
         echo "run_bor_block_mrl=$RUN_BOR_BLOCK_MRL"
         echo "run_cascade_stop_gradient_mrl=$RUN_CASCADE_STOP_GRADIENT_MRL"
         echo "run_bor_mrl_frozen=$RUN_BOR_MRL_FROZEN"
@@ -80,6 +83,7 @@ write_manifest() {
         echo "bor_orthogonal_map=$BOR_ORTHOGONAL_MAP"
         echo "bor_use_trivialization=$BOR_USE_TRIVIALIZATION"
         echo "bor_stop_gradient=$BOR_STOP_GRADIENT"
+        echo "bor_residual_alpha_init=$BOR_RESIDUAL_ALPHA_INIT"
         echo "cascade_stop_gradient=$CASCADE_STOP_GRADIENT"
     } > "$EXPERIMENT_DIR/manifest.txt"
 }
@@ -179,6 +183,25 @@ if [[ "$RUN_BOR_MRL" == "1" ]]; then
         --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
         --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
         --bor_stop_gradient "$BOR_STOP_GRADIENT"
+fi
+
+if [[ "$RUN_BOR_MRL_RESIDUAL" == "1" ]]; then
+    train_run bor_mrl_residual \
+        --model.bor_mrl=1 \
+        --model.bor_mode=orthogonal \
+        --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION" \
+        --model.bor_stop_gradient="$BOR_STOP_GRADIENT" \
+        --model.bor_residual_orthogonal=1 \
+        --model.bor_residual_alpha_init="$BOR_RESIDUAL_ALPHA_INIT"
+    eval_run bor_mrl_residual \
+        --bor_mrl \
+        --bor_mode orthogonal \
+        --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+        --bor_stop_gradient "$BOR_STOP_GRADIENT" \
+        --bor_residual_orthogonal 1 \
+        --bor_residual_alpha_init "$BOR_RESIDUAL_ALPHA_INIT"
 fi
 
 if [[ "$RUN_BOR_BLOCK_MRL" == "1" ]]; then
