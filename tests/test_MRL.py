@@ -13,6 +13,8 @@ from MRL import (
     Matryoshka_CE_Loss,
     MRL_Linear_Layer,
     block_widths_from_nesting_list,
+    mrl_gradient_conflict_stats,
+    mrl_sampling_probabilities,
 )
 from retrieval.metrics import (
     compute_retrieval_metrics_at_k,
@@ -54,6 +56,99 @@ def test_relative_importance():
 
     assert isinstance(loss, torch.Tensor)
     assert loss.dim() == 0
+
+
+def test_default_all_mode_matches_sum_of_ce_losses():
+    loss_fn = Matryoshka_CE_Loss()
+    output = torch.randn(3, 4, 5, requires_grad=True)
+    target = torch.empty(4, dtype=torch.long).random_(5)
+
+    loss = loss_fn(output, target)
+    expected = sum(F.cross_entropy(output_i, target) for output_i in output)
+
+    assert torch.allclose(loss, expected)
+
+
+def test_sampled_prefix_loss_returns_scalar_and_valid_index():
+    torch.manual_seed(0)
+    nesting_list = [2, 4, 8]
+    loss_fn = Matryoshka_CE_Loss(
+        mrl_loss_mode="sampled_prefix",
+        nesting_list=nesting_list,
+    )
+    output = torch.randn(3, 4, 5, requires_grad=True)
+    target = torch.empty(4, dtype=torch.long).random_(5)
+
+    loss = loss_fn(output, target)
+
+    assert isinstance(loss, torch.Tensor)
+    assert loss.dim() == 0
+    assert 0 <= loss_fn.last_sampled_idx < len(nesting_list)
+    assert loss_fn.last_sampled_dim == nesting_list[loss_fn.last_sampled_idx]
+
+
+def test_sampling_probabilities_sum_and_inverse_dim_prefers_smaller_prefixes():
+    nesting_list = [8, 16, 32]
+    uniform = mrl_sampling_probabilities(nesting_list, "uniform")
+    inverse_dim = mrl_sampling_probabilities(nesting_list, "inverse_dim")
+    inverse_sqrt_dim = mrl_sampling_probabilities(nesting_list, "inverse_sqrt_dim")
+
+    assert torch.allclose(uniform.sum(), torch.tensor(1.0))
+    assert torch.allclose(inverse_dim.sum(), torch.tensor(1.0))
+    assert torch.allclose(inverse_sqrt_dim.sum(), torch.tensor(1.0))
+    assert inverse_dim[0] > inverse_dim[1] > inverse_dim[2]
+    assert inverse_sqrt_dim[0] > inverse_sqrt_dim[1] > inverse_sqrt_dim[2]
+
+
+def test_sampled_prefix_dummy_does_not_change_loss_and_touches_all_logits():
+    loss_fn = Matryoshka_CE_Loss(
+        mrl_loss_mode="sampled_prefix",
+        nesting_list=[2, 4, 8],
+    )
+    loss_fn.sampled_prefix_probs.copy_(torch.tensor([0.0, 1.0, 0.0]))
+    outputs = tuple(torch.randn(4, 5, requires_grad=True) for _ in range(3))
+    target = torch.empty(4, dtype=torch.long).random_(5)
+
+    loss = loss_fn(outputs, target)
+    expected = F.cross_entropy(outputs[1], target)
+
+    assert torch.allclose(loss, expected)
+    loss.backward()
+    assert outputs[0].grad is not None
+    assert outputs[1].grad is not None
+    assert outputs[2].grad is not None
+    assert torch.allclose(outputs[0].grad, torch.zeros_like(outputs[0]))
+    assert outputs[1].grad.abs().sum() > 0
+    assert torch.allclose(outputs[2].grad, torch.zeros_like(outputs[2]))
+
+
+def test_all_prefix_logits_are_produced_in_sampled_mode():
+    nesting_list = [2, 4, 8]
+    layer = MRL_Linear_Layer(nesting_list, num_classes=5)
+    loss_fn = Matryoshka_CE_Loss(
+        mrl_loss_mode="sampled_prefix",
+        nesting_list=nesting_list,
+    )
+    output = layer(torch.randn(4, nesting_list[-1]))
+    target = torch.empty(4, dtype=torch.long).random_(5)
+    loss = loss_fn(output, target)
+
+    assert len(output) == len(nesting_list)
+    assert loss.dim() == 0
+
+
+def test_mrl_gradient_conflict_stats_detects_negative_cosine():
+    shared = torch.randn(2, 3, requires_grad=True)
+    losses = torch.stack([shared.sum(), -shared.sum()])
+
+    stats = mrl_gradient_conflict_stats(losses, shared, [2, 4])
+
+    assert stats["mrl_grad_conflict_pair_count"] == 1
+    assert stats["mrl_grad_conflict_count"] == 1
+    assert stats["mrl_grad_conflict_fraction"] == pytest.approx(1.0)
+    assert stats["mrl_grad_conflict_min_cosine"] == pytest.approx(-1.0)
+    assert stats["mrl_grad_conflict_worst_dim_i"] == 2
+    assert stats["mrl_grad_conflict_worst_dim_j"] == 4
 
 
 def test_custom_num_classes_layers():

@@ -25,6 +25,12 @@ VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-256}
 NUM_WORKERS=${NUM_WORKERS:-4}
 EVAL_WORKERS=${EVAL_WORKERS:-4}
 
+# MRL loss/probe knobs.
+MRL_LOSS_MODE=${MRL_LOSS_MODE:-all}
+SAMPLED_PREFIX_DISTRIBUTION=${SAMPLED_PREFIX_DISTRIBUTION:-uniform}
+SAMPLED_PREFIX_LOG_INTERVAL=${SAMPLED_PREFIX_LOG_INTERVAL:-100}
+MRL_GRADIENT_CONFLICT_INTERVAL=${MRL_GRADIENT_CONFLICT_INTERVAL:-0}
+
 # Method toggles.
 RUN_MRL=${RUN_MRL:-1}
 RUN_MRLE=${RUN_MRLE:-0}
@@ -56,6 +62,17 @@ echo "CIFAR-100 experiment directory: $EXPERIMENT_DIR"
 echo "Seed: $SEED"
 echo "Deterministic: $DETERMINISTIC"
 echo "CIFAR-100 data root: $CIFAR100_DIR"
+echo "MRL loss mode: $MRL_LOSS_MODE"
+echo "Sampled-prefix distribution: $SAMPLED_PREFIX_DISTRIBUTION"
+echo "Sampled-prefix log interval: $SAMPLED_PREFIX_LOG_INTERVAL"
+echo "MRL gradient conflict interval: $MRL_GRADIENT_CONFLICT_INTERVAL"
+
+MRL_TRAINING_ARGS=(
+    --training.mrl_loss_mode="$MRL_LOSS_MODE"
+    --training.sampled_prefix_distribution="$SAMPLED_PREFIX_DISTRIBUTION"
+    --training.sampled_prefix_log_interval="$SAMPLED_PREFIX_LOG_INTERVAL"
+    --training.mrl_gradient_conflict_interval="$MRL_GRADIENT_CONFLICT_INTERVAL"
+)
 
 write_manifest() {
     {
@@ -68,6 +85,10 @@ write_manifest() {
         echo "val_batch_size=$VAL_BATCH_SIZE"
         echo "num_workers=$NUM_WORKERS"
         echo "eval_workers=$EVAL_WORKERS"
+        echo "mrl_loss_mode=$MRL_LOSS_MODE"
+        echo "sampled_prefix_distribution=$SAMPLED_PREFIX_DISTRIBUTION"
+        echo "sampled_prefix_log_interval=$SAMPLED_PREFIX_LOG_INTERVAL"
+        echo "mrl_gradient_conflict_interval=$MRL_GRADIENT_CONFLICT_INTERVAL"
         echo "fixed_feature_dims=$FIXED_FEATURE_DIMS"
         echo "run_mrl=$RUN_MRL"
         echo "run_mrle=$RUN_MRLE"
@@ -161,17 +182,22 @@ eval_run() {
 write_manifest
 
 if [[ "$RUN_MRL" == "1" ]]; then
-    train_run mrl --model.mrl=1
+    train_run mrl \
+        "${MRL_TRAINING_ARGS[@]}" \
+        --model.mrl=1
     eval_run mrl --mrl
 fi
 
 if [[ "$RUN_MRLE" == "1" ]]; then
-    train_run mrle --model.efficient=1
+    train_run mrle \
+        "${MRL_TRAINING_ARGS[@]}" \
+        --model.efficient=1
     eval_run mrle --mrl --efficient
 fi
 
 if [[ "$RUN_BOR_MRL" == "1" ]]; then
     train_run bor_mrl \
+        "${MRL_TRAINING_ARGS[@]}" \
         --model.bor_mrl=1 \
         --model.bor_mode=orthogonal \
         --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
@@ -187,6 +213,7 @@ fi
 
 if [[ "$RUN_BOR_MRL_RESIDUAL" == "1" ]]; then
     train_run bor_mrl_residual \
+        "${MRL_TRAINING_ARGS[@]}" \
         --model.bor_mrl=1 \
         --model.bor_mode=orthogonal \
         --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
@@ -206,6 +233,7 @@ fi
 
 if [[ "$RUN_BOR_BLOCK_MRL" == "1" ]]; then
     train_run bor_block_mrl \
+        "${MRL_TRAINING_ARGS[@]}" \
         --model.bor_block_mrl=1 \
         --model.bor_mode=orthogonal \
         --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
@@ -221,6 +249,7 @@ fi
 
 if [[ "$RUN_CASCADE_STOP_GRADIENT_MRL" == "1" ]]; then
     train_run cascade_stop_gradient_mrl \
+        "${MRL_TRAINING_ARGS[@]}" \
         --model.cascade_stop_gradient_mrl=1 \
         --model.cascade_stop_gradient="$CASCADE_STOP_GRADIENT"
     eval_run cascade_stop_gradient_mrl \
@@ -230,6 +259,7 @@ fi
 
 if [[ "$RUN_BOR_MRL_FROZEN" == "1" ]]; then
     train_run bor_mrl_frozen \
+        "${MRL_TRAINING_ARGS[@]}" \
         --model.bor_mrl=1 \
         --model.bor_mode=frozen \
         --model.bor_stop_gradient="$BOR_STOP_GRADIENT"
@@ -241,6 +271,7 @@ fi
 
 if [[ "$RUN_BOR_MRL_CAYLEY" == "1" ]]; then
     train_run bor_mrl_cayley \
+        "${MRL_TRAINING_ARGS[@]}" \
         --model.bor_mrl=1 \
         --model.bor_mode=orthogonal \
         --model.bor_orthogonal_map=cayley \
@@ -256,6 +287,7 @@ fi
 
 if [[ "$RUN_BOR_MRL_HOUSEHOLDER" == "1" ]]; then
     train_run bor_mrl_householder \
+        "${MRL_TRAINING_ARGS[@]}" \
         --model.bor_mrl=1 \
         --model.bor_mode=orthogonal \
         --model.bor_orthogonal_map=householder \

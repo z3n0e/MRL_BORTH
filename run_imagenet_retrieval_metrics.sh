@@ -33,11 +33,41 @@ fi
 
 RUN_DIR=$(cd "$RUN_DIR" && pwd)
 CHECKPOINT_DIR="$RUN_DIR/checkpoints"
+MANIFEST="$RUN_DIR/manifest.txt"
 
 if [[ ! -d "$CHECKPOINT_DIR" ]]; then
     echo "Missing checkpoint directory: $CHECKPOINT_DIR"
     exit 1
 fi
+
+TRAINING_MRL_LOSS_MODE=${MRL_LOSS_MODE:-}
+TRAINING_SAMPLED_PREFIX_DISTRIBUTION=${SAMPLED_PREFIX_DISTRIBUTION:-}
+TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=${SAMPLED_PREFIX_LOG_INTERVAL:-}
+TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL=${MRL_GRADIENT_CONFLICT_INTERVAL:-}
+
+if [[ -f "$MANIFEST" ]]; then
+    while IFS='=' read -r key value; do
+        case "$key" in
+            mrl_loss_mode)
+                [[ -z "$TRAINING_MRL_LOSS_MODE" ]] && TRAINING_MRL_LOSS_MODE=$value
+                ;;
+            sampled_prefix_distribution)
+                [[ -z "$TRAINING_SAMPLED_PREFIX_DISTRIBUTION" ]] && TRAINING_SAMPLED_PREFIX_DISTRIBUTION=$value
+                ;;
+            sampled_prefix_log_interval)
+                [[ -z "$TRAINING_SAMPLED_PREFIX_LOG_INTERVAL" ]] && TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=$value
+                ;;
+            mrl_gradient_conflict_interval)
+                [[ -z "$TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL" ]] && TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL=$value
+                ;;
+        esac
+    done < "$MANIFEST"
+fi
+
+TRAINING_MRL_LOSS_MODE=${TRAINING_MRL_LOSS_MODE:-all}
+TRAINING_SAMPLED_PREFIX_DISTRIBUTION=${TRAINING_SAMPLED_PREFIX_DISTRIBUTION:-uniform}
+TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=${TRAINING_SAMPLED_PREFIX_LOG_INTERVAL:-100}
+TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL=${TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL:-0}
 
 PYTHON=${PYTHON:-python}
 RETRIEVAL_ROOT=${RETRIEVAL_ROOT:-"$RUN_DIR/retrieval"}
@@ -69,6 +99,10 @@ echo "Summary CSV: $SUMMARY_CSV"
 echo "Index type: $INDEX_TYPE"
 echo "Neighbor shortlist length: $K"
 echo "Metric k values: $SHORTLIST"
+echo "Training MRL loss mode: $TRAINING_MRL_LOSS_MODE"
+echo "Training sampled-prefix distribution: $TRAINING_SAMPLED_PREFIX_DISTRIBUTION"
+echo "Training sampled-prefix log interval: $TRAINING_SAMPLED_PREFIX_LOG_INTERVAL"
+echo "Training MRL gradient conflict interval: $TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL"
 echo "BOR stop gradient: $BOR_STOP_GRADIENT"
 echo "BOR residual alpha init: $BOR_RESIDUAL_ALPHA_INIT"
 echo "Cascade stop gradient: $CASCADE_STOP_GRADIENT"
@@ -266,7 +300,11 @@ run_method bor_mrl_frozen \
     --bor_mode frozen \
     --bor_stop_gradient "$BOR_STOP_GRADIENT"
 
-"$PYTHON" - "$METRICS_DIR" "$SUMMARY_CSV" <<'PY'
+"$PYTHON" - "$METRICS_DIR" "$SUMMARY_CSV" \
+    "$TRAINING_MRL_LOSS_MODE" \
+    "$TRAINING_SAMPLED_PREFIX_DISTRIBUTION" \
+    "$TRAINING_SAMPLED_PREFIX_LOG_INTERVAL" \
+    "$TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL" <<'PY'
 import csv
 import json
 import sys
@@ -274,6 +312,10 @@ from pathlib import Path
 
 metrics_dir = Path(sys.argv[1])
 summary_csv = Path(sys.argv[2])
+training_mrl_loss_mode = sys.argv[3] if len(sys.argv) > 3 else ""
+training_sampled_prefix_distribution = sys.argv[4] if len(sys.argv) > 4 else ""
+training_sampled_prefix_log_interval = sys.argv[5] if len(sys.argv) > 5 else ""
+training_mrl_gradient_conflict_interval = sys.argv[6] if len(sys.argv) > 6 else ""
 rows = []
 
 for path in sorted(metrics_dir.glob("*.json")):
@@ -283,6 +325,10 @@ for path in sorted(metrics_dir.glob("*.json")):
         rows.append({
             "method": path.stem,
             "model": data.get("model", ""),
+            "training_mrl_loss_mode": training_mrl_loss_mode,
+            "training_sampled_prefix_distribution": training_sampled_prefix_distribution,
+            "training_sampled_prefix_log_interval": training_sampled_prefix_log_interval,
+            "training_mrl_gradient_conflict_interval": training_mrl_gradient_conflict_interval,
             "feature_config": data.get("feature_config", ""),
             "eval_config": data.get("eval_config", ""),
             "index_type": data.get("index_type", ""),
@@ -297,7 +343,11 @@ for path in sorted(metrics_dir.glob("*.json")):
         })
 
 fieldnames = [
-    "method", "model", "feature_config", "eval_config", "index_type",
+    "method", "model", "training_mrl_loss_mode",
+    "training_sampled_prefix_distribution",
+    "training_sampled_prefix_log_interval",
+    "training_mrl_gradient_conflict_interval",
+    "feature_config", "eval_config", "index_type",
     "dim", "k", "top1", "mAP", "precision", "recall", "topk",
     "neighbors_path",
 ]

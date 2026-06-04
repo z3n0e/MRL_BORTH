@@ -105,7 +105,11 @@ Section('training', 'training hyper param stuff').params(
     label_smoothing=Param(float, 'label smoothing parameter', default=0.1),
     use_blurpool=Param(int, 'use blurpool?', default=0),
     seed=Param(int, 'random seed for reproducible training', default=0),
-    deterministic=Param(int, 'enable deterministic PyTorch/CUDA behavior? (1/0)', default=0)
+    deterministic=Param(int, 'enable deterministic PyTorch/CUDA behavior? (1/0)', default=0),
+    mrl_loss_mode=Param(And(str, OneOf(['all', 'sampled_prefix'])), 'MRL loss mode', default='all'),
+    sampled_prefix_distribution=Param(And(str, OneOf(['uniform', 'inverse_dim', 'inverse_sqrt_dim'])), 'Sampled-prefix MRL distribution', default='uniform'),
+    sampled_prefix_log_interval=Param(int, 'Sampled-prefix training log interval in batches', default=100),
+    mrl_gradient_conflict_interval=Param(int, 'Measure MRL CE gradient conflict every N batches; 0 disables it', default=0)
 )
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -269,8 +273,11 @@ class ImageNetTrainer:
     @param('training.optimizer')
     @param('training.weight_decay')
     @param('training.label_smoothing')
+    @param('training.mrl_loss_mode')
+    @param('training.sampled_prefix_distribution')
     def create_optimizer(self, momentum, optimizer, weight_decay,
-                         label_smoothing):
+                         label_smoothing, mrl_loss_mode,
+                         sampled_prefix_distribution):
         assert optimizer == 'sgd'
 
         # Only do weight decay on non-batchnorm parameters
@@ -288,9 +295,25 @@ class ImageNetTrainer:
         self.optimizer = ch.optim.SGD(param_groups, lr=1, momentum=momentum)
         # Adding Nesting Case....
         if self.nesting:
-            self.loss = Matryoshka_CE_Loss(label_smoothing=label_smoothing)
+            self.loss = Matryoshka_CE_Loss(
+                label_smoothing=label_smoothing,
+                mrl_loss_mode=mrl_loss_mode,
+                nesting_list=self.nesting_list,
+                sampled_prefix_distribution=sampled_prefix_distribution
+            )
+            self.val_loss = Matryoshka_CE_Loss(label_smoothing=label_smoothing)
+            if mrl_loss_mode == 'sampled_prefix':
+                probs = self.loss.sampled_prefix_probabilities()
+                print(
+                    "Sampled-prefix MRL distribution "
+                    f"({sampled_prefix_distribution}): "
+                    f"{dict(zip(self.nesting_list, probs))}"
+                )
         else:   
+            if mrl_loss_mode != 'all':
+                raise ValueError("--training.mrl_loss_mode=sampled_prefix requires an MRL model")
             self.loss = ch.nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+            self.val_loss = self.loss
 
 
     def _dataset_root(self, root):
@@ -468,6 +491,68 @@ class ImageNetTrainer:
             log_dict['bor_residual_alpha_mean'] = float(np.mean(alpha_values))
         return log_dict
 
+    def sampled_prefix_active(self):
+        return self.nesting and getattr(self.loss, 'mrl_loss_mode', None) == 'sampled_prefix'
+
+    def sampled_prefix_counts_log_dict(self):
+        if not self.sampled_prefix_active():
+            return {}
+
+        counts = self.loss.sample_counts_list()
+        return {
+            'sampled_prefix_counts': counts,
+            'sampled_prefix_counts_by_dim': {
+                str(dim): int(count)
+                for dim, count in zip(self.nesting_list, counts)
+            }
+        }
+
+    def sampled_prefix_startup_log_dict(self):
+        if not self.sampled_prefix_active():
+            return {}
+
+        return {
+            'mrl_loss_mode': 'sampled_prefix',
+            'sampled_prefix_distribution': self.loss.sampled_prefix_distribution,
+            'sampled_prefix_dims': self.nesting_list,
+            'sampled_prefix_probs': self.loss.sampled_prefix_probabilities()
+        }
+
+    def sampled_prefix_step_log_dict(self):
+        if not self.sampled_prefix_active() or self.loss.last_sampled_idx is None:
+            return {}
+
+        log_dict = {
+            'mrl_loss_mode': 'sampled_prefix',
+            'sampled_prefix_idx': int(self.loss.last_sampled_idx),
+            'sampled_prefix_dim': int(self.loss.last_sampled_dim),
+            'sampled_prefix_ce_loss': float(self.loss.last_selected_ce.float().cpu().item())
+        }
+        log_dict.update(self.sampled_prefix_counts_log_dict())
+        return log_dict
+
+    def mrl_gradient_conflict_log_dict(self, output, target):
+        if not self.nesting:
+            return {}
+
+        fc = getattr(self.base_model(), 'fc', None)
+        shared_tensor = getattr(fc, 'last_input', None)
+        if shared_tensor is None:
+            if not getattr(self, '_warned_missing_mrl_shared_tensor', False):
+                print("MRL gradient conflict measurement skipped: shared MRL feature tensor was not captured.")
+                self._warned_missing_mrl_shared_tensor = True
+            return {}
+
+        prefix_losses = self.loss.per_prefix_losses(output, target)
+        return mrl_gradient_conflict_stats(prefix_losses, shared_tensor, self.nesting_list)
+
+    def set_mrl_gradient_conflict_capture(self, enabled):
+        fc = getattr(self.base_model(), 'fc', None)
+        if hasattr(fc, 'capture_input_for_gradient_conflict'):
+            fc.capture_input_for_gradient_conflict = bool(enabled)
+            if not enabled:
+                fc.last_input = None
+
     def eval_and_log(self, extra_dict={}):
         start_val = time.time()
         if self.nesting:
@@ -480,6 +565,7 @@ class ImageNetTrainer:
             'current_lr': self.optimizer.param_groups[0]['lr'], 'val_time': val_time
         }
         d.update(self.bor_residual_alpha_log_dict())
+        d.update(self.sampled_prefix_counts_log_dict())
         for k in stats.keys():
             if k=='loss':
                 continue
@@ -572,7 +658,10 @@ class ImageNetTrainer:
         return model, scaler
 
     @param('logging.log_level')
-    def train_loop(self, epoch, log_level):
+    @param('training.sampled_prefix_log_interval')
+    @param('training.mrl_gradient_conflict_interval')
+    def train_loop(self, epoch, log_level, sampled_prefix_log_interval,
+                   mrl_gradient_conflict_interval):
         model = self.model
         model.train()
         losses = []
@@ -592,14 +681,39 @@ class ImageNetTrainer:
             images = images.contiguous(memory_format=ch.channels_last)
 
             self.optimizer.zero_grad(set_to_none=True)
+            gradient_conflict_log = {}
+            should_measure_conflict = (
+                self.nesting and
+                mrl_gradient_conflict_interval > 0 and
+                (ix == 0 or (ix + 1) % mrl_gradient_conflict_interval == 0)
+            )
+            self.set_mrl_gradient_conflict_capture(should_measure_conflict)
             with autocast(enabled=self.device.type == 'cuda'):
                 output = self.model(images)
                 loss_train = self.loss(output, target)
+                if should_measure_conflict:
+                    gradient_conflict_log = self.mrl_gradient_conflict_log_dict(output, target)
 
             self.scaler.scale(loss_train).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            self.set_mrl_gradient_conflict_capture(False)
             ### Training end
+
+            if self.sampled_prefix_active() and sampled_prefix_log_interval > 0:
+                if ix == 0 or (ix + 1) % sampled_prefix_log_interval == 0:
+                    self.log({
+                        'epoch': epoch,
+                        'iter': ix,
+                        **self.sampled_prefix_step_log_dict()
+                    })
+
+            if gradient_conflict_log:
+                self.log({
+                    'epoch': epoch,
+                    'iter': ix,
+                    **gradient_conflict_log
+                })
 
             ### Logging start
             if log_level > 0:
@@ -643,7 +757,7 @@ class ImageNetTrainer:
                     for k in ['top_1', 'top_5']:
                         self.val_meters[k](output, target)
 
-                    loss_val = self.loss(output, target)
+                    loss_val = self.val_loss(output, target)
                     self.val_meters['loss'](loss_val)
 
         stats = {k: m.compute().item() for k, m in self.val_meters.items()}
@@ -678,7 +792,7 @@ class ImageNetTrainer:
                         s = "top_5_{}".format(self.nesting_list[i])
                         self.val_meters[s](output[i], target)
 
-                    loss_val = self.loss(output, target)
+                    loss_val = self.val_loss(output, target)
                     self.val_meters['loss'](loss_val)
 
         stats = {k: m.compute().item() for k, m in self.val_meters.items()}
@@ -736,6 +850,10 @@ class ImageNetTrainer:
 
         with open(folder / 'params.json', 'w+') as handle:
             json.dump(params, handle)
+
+        startup_log = self.sampled_prefix_startup_log_dict()
+        if startup_log:
+            self.log(startup_log)
 
     def log(self, content):
         print(f'=> Log: {content}')

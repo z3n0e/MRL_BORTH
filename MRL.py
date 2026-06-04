@@ -11,26 +11,193 @@ except ImportError:
 Loss function for Matryoshka Representation Learning 
 '''
 
+MRL_LOSS_MODES = {"all", "sampled_prefix"}
+SAMPLED_PREFIX_DISTRIBUTIONS = {"uniform", "inverse_dim", "inverse_sqrt_dim"}
+
+
+def mrl_sampling_probabilities(nesting_list, distribution="uniform"):
+	if distribution not in SAMPLED_PREFIX_DISTRIBUTIONS:
+		raise ValueError(
+			f"sampled prefix distribution must be one of {sorted(SAMPLED_PREFIX_DISTRIBUTIONS)}, "
+			f"got {distribution!r}"
+		)
+
+	dims = torch.tensor([int(dim) for dim in nesting_list], dtype=torch.float32)
+	if dims.numel() == 0:
+		raise ValueError("nesting_list must contain at least one positive dimension")
+	if torch.any(dims <= 0):
+		raise ValueError("nesting_list dimensions must all be positive")
+
+	if distribution == "uniform":
+		weights = torch.ones_like(dims)
+	elif distribution == "inverse_dim":
+		weights = 1.0 / dims
+	else:
+		weights = torch.rsqrt(dims)
+
+	return weights / weights.sum()
+
+
+def mrl_output_tuple(output):
+	if isinstance(output, torch.Tensor):
+		return tuple(output.unbind(dim=0))
+	return tuple(output)
+
+
+def mrl_gradient_conflict_stats(losses, shared_tensor, nesting_list=None, eps=1e-12):
+	if shared_tensor is None:
+		raise ValueError("shared_tensor is required for MRL gradient conflict measurement")
+
+	loss_items = list(losses.unbind(dim=0)) if isinstance(losses, torch.Tensor) else list(losses)
+	if len(loss_items) == 0:
+		raise ValueError("losses must contain at least one prefix loss")
+
+	grads = []
+	for loss in loss_items:
+		grad = torch.autograd.grad(
+			loss,
+			shared_tensor,
+			retain_graph=True,
+			allow_unused=True,
+		)[0]
+		if grad is None:
+			grad = torch.zeros_like(shared_tensor)
+		grads.append(grad.detach().float().reshape(-1))
+
+	grad_matrix = torch.stack(grads)
+	norms = grad_matrix.norm(p=2, dim=1).clamp_min(eps)
+	cosine = (grad_matrix @ grad_matrix.t()) / (norms[:, None] * norms[None, :])
+	cosine = cosine.clamp(min=-1.0, max=1.0)
+	num_losses = cosine.shape[0]
+
+	if num_losses > 1:
+		pair_i, pair_j = torch.triu_indices(num_losses, num_losses, offset=1, device=cosine.device)
+		pair_cosine = cosine[pair_i, pair_j]
+		conflicting = pair_cosine < 0
+		worst_pos = int(pair_cosine.argmin().item())
+		worst_i = int(pair_i[worst_pos].item())
+		worst_j = int(pair_j[worst_pos].item())
+		conflict_count = int(conflicting.sum().item())
+		pair_count = int(pair_cosine.numel())
+		negative_mean = (
+			float(pair_cosine[conflicting].mean().item())
+			if conflict_count > 0 else 0.0
+		)
+		mean_cosine = float(pair_cosine.mean().item())
+		min_cosine = float(pair_cosine.min().item())
+	else:
+		worst_i = worst_j = 0
+		conflict_count = 0
+		pair_count = 0
+		negative_mean = 0.0
+		mean_cosine = 0.0
+		min_cosine = 0.0
+
+	stats = {
+		"mrl_grad_conflict_mean_cosine": mean_cosine,
+		"mrl_grad_conflict_min_cosine": min_cosine,
+		"mrl_grad_conflict_negative_mean_cosine": negative_mean,
+		"mrl_grad_conflict_fraction": float(conflict_count / pair_count) if pair_count else 0.0,
+		"mrl_grad_conflict_count": conflict_count,
+		"mrl_grad_conflict_pair_count": pair_count,
+		"mrl_grad_conflict_worst_i": worst_i,
+		"mrl_grad_conflict_worst_j": worst_j,
+		"mrl_grad_conflict_cosine_matrix": cosine.cpu().tolist(),
+	}
+
+	if nesting_list is not None and len(nesting_list) == num_losses:
+		stats["mrl_grad_conflict_worst_dim_i"] = int(nesting_list[worst_i])
+		stats["mrl_grad_conflict_worst_dim_j"] = int(nesting_list[worst_j])
+
+	return stats
+
+
 class Matryoshka_CE_Loss(nn.Module):
-	def __init__(self, relative_importance: List[float]=None, **kwargs):
+	def __init__(self, relative_importance: List[float]=None,
+	             mrl_loss_mode="all", nesting_list=None,
+	             sampled_prefix_distribution="uniform", **kwargs):
 		super(Matryoshka_CE_Loss, self).__init__()
+		if mrl_loss_mode not in MRL_LOSS_MODES:
+			raise ValueError(f"mrl_loss_mode must be one of {sorted(MRL_LOSS_MODES)}, got {mrl_loss_mode!r}")
+		if sampled_prefix_distribution not in SAMPLED_PREFIX_DISTRIBUTIONS:
+			raise ValueError(
+				f"sampled_prefix_distribution must be one of {sorted(SAMPLED_PREFIX_DISTRIBUTIONS)}, "
+				f"got {sampled_prefix_distribution!r}"
+			)
+
 		self.criterion = nn.CrossEntropyLoss(**kwargs)
 		# relative importance shape: [G]
 		self.relative_importance = relative_importance
+		self.mrl_loss_mode = mrl_loss_mode
+		self.nesting_list = None if nesting_list is None else [int(dim) for dim in nesting_list]
+		self.sampled_prefix_distribution = sampled_prefix_distribution
+		self.last_sampled_idx = None
+		self.last_sampled_dim = None
+		self.last_selected_ce = None
 
-	def forward(self, output, target):
-		# output shape: [G granularities, N batch size, C number of classes]
-		# target shape: [N batch size]
+		if self.mrl_loss_mode == "sampled_prefix":
+			if self.nesting_list is None:
+				raise ValueError("nesting_list is required when mrl_loss_mode='sampled_prefix'")
+			probs = mrl_sampling_probabilities(self.nesting_list, self.sampled_prefix_distribution)
+			self.register_buffer("sampled_prefix_probs", probs)
+			self.register_buffer("sample_counts", torch.zeros(len(self.nesting_list), dtype=torch.long))
+		else:
+			self.register_buffer("sampled_prefix_probs", torch.empty(0, dtype=torch.float32))
+			self.register_buffer("sample_counts", torch.empty(0, dtype=torch.long))
 
-		# Calculate losses for each output and stack them. This is still O(N)
-		losses = torch.stack([self.criterion(output_i, target) for output_i in output])
-		
+	def per_prefix_losses(self, output, target):
+		outputs = mrl_output_tuple(output)
+		if len(outputs) == 0:
+			raise ValueError("Matryoshka_CE_Loss requires at least one prefix output")
+		return torch.stack([self.criterion(output_i, target) for output_i in outputs])
+
+	def weighted_all_loss(self, losses):
 		# Set relative_importance to 1 if not specified
 		rel_importance = losses.new_ones(losses.shape) if self.relative_importance is None else losses.new_tensor(self.relative_importance)
 		
 		# Apply relative importance weights
 		weighted_losses = rel_importance * losses
 		return weighted_losses.sum()
+
+	def sample_prefix_idx(self):
+		if self.sampled_prefix_probs.numel() == 0:
+			raise RuntimeError("sample_prefix_idx() requires mrl_loss_mode='sampled_prefix'")
+		return int(torch.multinomial(self.sampled_prefix_probs.cpu(), 1).item())
+
+	def sampled_prefix_probabilities(self):
+		return self.sampled_prefix_probs.detach().cpu().tolist()
+
+	def sample_counts_list(self):
+		return self.sample_counts.detach().cpu().tolist()
+
+	def forward(self, output, target):
+		# output shape: [G granularities, N batch size, C number of classes]
+		# target shape: [N batch size]
+		outputs = mrl_output_tuple(output)
+
+		if self.mrl_loss_mode == "all":
+			# Calculate losses for each output and stack them. This is still O(N)
+			losses = self.per_prefix_losses(outputs, target)
+			return self.weighted_all_loss(losses)
+
+		if len(outputs) != self.sampled_prefix_probs.numel():
+			raise ValueError(
+				f"Expected {self.sampled_prefix_probs.numel()} prefix logits, got {len(outputs)}"
+			)
+
+		sampled_idx = self.sample_prefix_idx()
+		selected_ce = self.criterion(outputs[sampled_idx], target)
+		dummy = selected_ce.new_zeros(())
+		for output_i in outputs:
+			dummy = dummy + 0.0 * output_i.sum()
+
+		with torch.no_grad():
+			self.sample_counts[sampled_idx] += 1
+
+		self.last_sampled_idx = sampled_idx
+		self.last_sampled_dim = self.nesting_list[sampled_idx]
+		self.last_selected_ce = selected_ce.detach()
+		return selected_ce + dummy
 
 
 def block_widths_from_nesting_list(nesting_list):
@@ -240,6 +407,8 @@ class IndependentBlockOrthogonalMRLHead(nn.Module):
 		self.last_blocks = None
 		self.last_raw_blocks = None
 		self.last_prefixes = None
+		self.last_input = None
+		self.capture_input_for_gradient_conflict = False
 
 	def forward(self, x):
 		if x.dim() != 2:
@@ -247,6 +416,7 @@ class IndependentBlockOrthogonalMRLHead(nn.Module):
 		if x.shape[1] != self.nesting_list[-1]:
 			raise ValueError(f"Expected feature dimension {self.nesting_list[-1]}, got {x.shape[1]}")
 
+		self.last_input = x if self.capture_input_for_gradient_conflict else None
 		self.last_raw_blocks = list(torch.split(x, self.block_transform.block_widths, dim=1))
 		z, transformed_blocks = self.block_transform(x, return_blocks=True)
 		self.last_z = z
@@ -328,6 +498,8 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		self.last_z = None
 		self.last_blocks = None
 		self.last_prefixes = None
+		self.last_input = None
+		self.capture_input_for_gradient_conflict = False
 
 	def forward(self, x):
 		if x.dim() != 2:
@@ -335,6 +507,7 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		if x.shape[1] != self.nesting_list[-1]:
 			raise ValueError(f"Expected feature dimension {self.nesting_list[-1]}, got {x.shape[1]}")
 
+		self.last_input = x if self.capture_input_for_gradient_conflict else None
 		blocks = list(torch.split(x, self.block_widths, dim=1))
 		self.last_blocks = blocks
 
@@ -389,6 +562,8 @@ class CascadeStopGradientMRLHead(nn.Module):
 
 		self.last_blocks = None
 		self.last_prefixes = None
+		self.last_input = None
+		self.capture_input_for_gradient_conflict = False
 
 	def forward(self, x):
 		if x.dim() != 2:
@@ -396,6 +571,7 @@ class CascadeStopGradientMRLHead(nn.Module):
 		if x.shape[1] != self.nesting_list[-1]:
 			raise ValueError(f"Expected feature dimension {self.nesting_list[-1]}, got {x.shape[1]}")
 
+		self.last_input = x if self.capture_input_for_gradient_conflict else None
 		blocks = list(torch.split(x, self.block_widths, dim=1))
 		self.last_blocks = blocks
 
@@ -434,6 +610,8 @@ class MRL_Linear_Layer(nn.Module):
 		self.nesting_list = nesting_list
 		self.num_classes = num_classes # Number of classes for classification
 		self.efficient = efficient
+		self.last_input = None
+		self.capture_input_for_gradient_conflict = False
 		if self.efficient:
 			setattr(self, f"nesting_classifier_{0}", nn.Linear(nesting_list[-1], self.num_classes, **kwargs))		
 		else:	
@@ -449,6 +627,7 @@ class MRL_Linear_Layer(nn.Module):
 
 
 	def forward(self, x):
+		self.last_input = x if self.capture_input_for_gradient_conflict else None
 		nesting_logits = ()
 		for i, num_feat in enumerate(self.nesting_list):
 			if self.efficient:
