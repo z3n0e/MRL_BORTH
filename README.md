@@ -117,6 +117,30 @@ python train_imagenet.py --config-file rn50_configs/rn50_40_epochs.yaml --model.
 --lr.lr=0.425
 ```
 
+### Block-wise cascade conflict-gated MRL
+
+Conflict gating is disabled by default, so the standard MRL command above keeps the original weighted-sum loss and backward pass. To smoke-test the block-cascade mode on CIFAR-100, run a short normal MRL job and then the gated variant:
+
+```bash
+cd train
+
+python train_imagenet.py --config-file rn50_configs/rn50_cifar100.yaml --model.mrl=1 \
+--data.root=$HOME/.cache/torchvision --logging.folder=../tmp/smoke_normal \
+--logging.run_name=mrl_normal --training.epochs=2 --training.batch_size=32 \
+--validation.batch_size=32 --data.num_workers=0 --logging.log_level=1
+
+python train_imagenet.py --config-file rn50_configs/rn50_cifar100.yaml --model.mrl=1 \
+--data.root=$HOME/.cache/torchvision --logging.folder=../tmp/smoke_gated \
+--logging.run_name=mrl_block_cascade --training.epochs=2 --training.batch_size=32 \
+--validation.batch_size=32 --data.num_workers=0 --logging.log_level=1 \
+--mrl-conflict-gating --mrl-conflict-mode=block_cascade \
+--mrl-conflict-alpha=0.5 --mrl-conflict-eps=1e-8
+
+python -m pytest ../tests/test_MRL.py -k "block_cascade"
+```
+
+The gated run logs adjacent cosine alignment, conflict fraction, projection magnitude, and per-adjacent-pair diagnostics. Check the `train_loss` entries in each run's `log` file for the two-epoch loss trend. The focused unit tests include a tiny encoder/head smoke step that checks encoder gradients and classifier-head gradients are both populated.
+
 ### Training MRL-E model
 
 ```bash 

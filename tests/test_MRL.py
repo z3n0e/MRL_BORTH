@@ -12,7 +12,9 @@ from MRL import (
     IndependentBlockOrthogonalMRLHead,
     Matryoshka_CE_Loss,
     MRL_Linear_Layer,
+    block_cascade_conflict_gating,
     block_widths_from_nesting_list,
+    mrl_block_cascade_filtered_feature_gradient,
     mrl_gradient_conflict_stats,
     mrl_sampling_probabilities,
 )
@@ -149,6 +151,58 @@ def test_mrl_gradient_conflict_stats_detects_negative_cosine():
     assert stats["mrl_grad_conflict_min_cosine"] == pytest.approx(-1.0)
     assert stats["mrl_grad_conflict_worst_dim_i"] == 2
     assert stats["mrl_grad_conflict_worst_dim_j"] == 4
+
+
+def test_block_cascade_conflict_gating_only_changes_shared_conflict_block():
+    small_grad = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+    large_grad = torch.tensor([[-1.0, 0.0, 2.0, 3.0]])
+
+    filtered, stats = block_cascade_conflict_gating(
+        [small_grad, large_grad],
+        [2, 4],
+        alpha=1.0,
+        eps=1e-8,
+    )
+
+    assert torch.equal(filtered[0], small_grad)
+    assert torch.allclose(filtered[1][:, :2], torch.zeros(1, 2))
+    assert torch.equal(filtered[1][:, 2:4], large_grad[:, 2:4])
+    assert stats["mrl_conflict_mean_adjacent_cosine"] == pytest.approx(-1.0)
+    assert stats["mrl_conflict_fraction"] == pytest.approx(1.0)
+    assert stats["mrl_conflict_pairs"][0]["pair"] == "4<-2"
+
+
+def test_block_cascade_filtered_step_keeps_encoder_and_head_gradients():
+    torch.manual_seed(0)
+    encoder = torch.nn.Linear(5, 4)
+    head = MRL_Linear_Layer([2, 4], num_classes=3)
+    loss_fn = Matryoshka_CE_Loss()
+    x = torch.randn(6, 5)
+    target = torch.empty(6, dtype=torch.long).random_(3)
+
+    z = encoder(x)
+    output = head(z)
+    prefix_losses = loss_fn.per_prefix_losses(output, target)
+    filtered_grad, stats = mrl_block_cascade_filtered_feature_gradient(
+        prefix_losses,
+        z,
+        [2, 4],
+        alpha=0.5,
+        eps=1e-8,
+    )
+
+    head_loss = loss_fn(head(z.detach()), target)
+    head_loss.backward()
+    z.backward(gradient=filtered_grad)
+
+    assert filtered_grad.shape == z.shape
+    assert stats["mrl_conflict_mode"] == "block_cascade"
+    assert encoder.weight.grad is not None
+    assert torch.isfinite(encoder.weight.grad).all()
+    for idx in range(2):
+        classifier = getattr(head, f"nesting_classifier_{idx}")
+        assert classifier.weight.grad is not None
+        assert torch.isfinite(classifier.weight.grad).all()
 
 
 def test_custom_num_classes_layers():

@@ -13,6 +13,7 @@ Loss function for Matryoshka Representation Learning
 
 MRL_LOSS_MODES = {"all", "sampled_prefix"}
 SAMPLED_PREFIX_DISTRIBUTIONS = {"uniform", "inverse_dim", "inverse_sqrt_dim"}
+MRL_CONFLICT_MODES = {"none", "block_cascade"}
 
 
 def mrl_sampling_probabilities(nesting_list, distribution="uniform"):
@@ -110,6 +111,153 @@ def mrl_gradient_conflict_stats(losses, shared_tensor, nesting_list=None, eps=1e
 		stats["mrl_grad_conflict_worst_dim_j"] = int(nesting_list[worst_j])
 
 	return stats
+
+
+def mrl_relative_importance_weights(losses, relative_importance=None):
+	loss_items = list(losses.unbind(dim=0)) if isinstance(losses, torch.Tensor) else list(losses)
+	if len(loss_items) == 0:
+		raise ValueError("losses must contain at least one prefix loss")
+
+	ref = loss_items[0]
+	if relative_importance is None:
+		return ref.new_ones(len(loss_items))
+
+	weights = ref.new_tensor(relative_importance)
+	if weights.numel() != len(loss_items):
+		raise ValueError(
+			f"relative_importance has {weights.numel()} entries, "
+			f"but there are {len(loss_items)} prefix losses"
+		)
+	return weights
+
+
+def mrl_per_prefix_feature_grads(losses, shared_tensor):
+	if shared_tensor is None:
+		raise ValueError("shared_tensor is required for MRL conflict gating")
+
+	loss_items = list(losses.unbind(dim=0)) if isinstance(losses, torch.Tensor) else list(losses)
+	if len(loss_items) == 0:
+		raise ValueError("losses must contain at least one prefix loss")
+
+	grads = []
+	for loss in loss_items:
+		grad = torch.autograd.grad(
+			loss,
+			shared_tensor,
+			retain_graph=True,
+			allow_unused=True,
+		)[0]
+		if grad is None:
+			grad = torch.zeros_like(shared_tensor)
+		grads.append(grad.detach().clone())
+	return grads
+
+
+def block_cascade_conflict_gating(feature_grads, nesting_list, alpha=0.5, eps=1e-8):
+	if len(feature_grads) != len(nesting_list):
+		raise ValueError(
+			f"Expected one feature gradient per nesting dim: "
+			f"{len(feature_grads)} gradients for {len(nesting_list)} dims"
+		)
+	if len(feature_grads) == 0:
+		raise ValueError("feature_grads must contain at least one gradient")
+	if feature_grads[0].dim() != 2:
+		raise ValueError(f"Expected feature gradients with shape [B, D], got {tuple(feature_grads[0].shape)}")
+
+	dims = [int(dim) for dim in nesting_list]
+	if any(dim <= 0 for dim in dims):
+		raise ValueError("nesting_list dimensions must all be positive")
+	if any(dim <= prev for prev, dim in zip(dims, dims[1:])):
+		raise ValueError("nesting_list must be strictly increasing")
+	if dims[-1] > feature_grads[0].shape[1]:
+		raise ValueError(f"Largest nesting dim {dims[-1]} exceeds feature dim {feature_grads[0].shape[1]}")
+
+	filtered = [grad.detach().clone() for grad in feature_grads]
+	pair_stats = []
+	cosine_values = []
+	conflict_values = []
+	projection_values = []
+
+	for idx, (small_dim, large_dim) in enumerate(zip(dims, dims[1:])):
+		for grad in filtered:
+			if grad.shape != filtered[0].shape:
+				raise ValueError("All feature gradients must have the same shape")
+
+		g_small = filtered[idx][:, :small_dim].float()
+		g_large_shared = filtered[idx + 1][:, :small_dim].float()
+		dot = (g_large_shared * g_small).sum(dim=1, keepdim=True)
+		small_norm_sq = g_small.pow(2).sum(dim=1, keepdim=True)
+		large_norm = g_large_shared.norm(p=2, dim=1, keepdim=True)
+		small_norm = small_norm_sq.sqrt()
+		cosine = dot / (large_norm * small_norm + eps)
+		conflicts = dot < 0
+
+		coeff = torch.where(
+			conflicts,
+			float(alpha) * dot / (small_norm_sq + eps),
+			torch.zeros_like(dot),
+		)
+		projection = coeff * g_small
+		filtered[idx + 1][:, :small_dim] = (
+			g_large_shared - projection
+		).to(dtype=filtered[idx + 1].dtype)
+
+		projection_magnitude = projection.norm(p=2, dim=1)
+		pair_label = f"{large_dim}<-{small_dim}"
+		pair_stats.append({
+			"pair": pair_label,
+			"small_dim": small_dim,
+			"large_dim": large_dim,
+			"mean_cosine": float(cosine.mean().detach().cpu().item()),
+			"conflict_fraction": float(conflicts.float().mean().detach().cpu().item()),
+			"avg_projection_magnitude": float(projection_magnitude.mean().detach().cpu().item()),
+		})
+		cosine_values.append(cosine.reshape(-1).detach())
+		conflict_values.append(conflicts.float().reshape(-1).detach())
+		projection_values.append(projection_magnitude.reshape(-1).detach())
+
+	if cosine_values:
+		all_cosines = torch.cat(cosine_values)
+		all_conflicts = torch.cat(conflict_values)
+		all_projections = torch.cat(projection_values)
+		mean_cosine = float(all_cosines.mean().cpu().item())
+		conflict_fraction = float(all_conflicts.mean().cpu().item())
+		avg_projection = float(all_projections.mean().cpu().item())
+	else:
+		mean_cosine = 0.0
+		conflict_fraction = 0.0
+		avg_projection = 0.0
+
+	stats = {
+		"mrl_conflict_mode": "block_cascade",
+		"mrl_conflict_mean_adjacent_cosine": mean_cosine,
+		"mrl_conflict_fraction": conflict_fraction,
+		"mrl_conflict_avg_projection_magnitude": avg_projection,
+		"mrl_conflict_pairs": pair_stats,
+	}
+	return filtered, stats
+
+
+def mrl_block_cascade_filtered_feature_gradient(
+	losses,
+	shared_tensor,
+	nesting_list,
+	relative_importance=None,
+	alpha=0.5,
+	eps=1e-8,
+):
+	feature_grads = mrl_per_prefix_feature_grads(losses, shared_tensor)
+	filtered_grads, stats = block_cascade_conflict_gating(
+		feature_grads,
+		nesting_list,
+		alpha=alpha,
+		eps=eps,
+	)
+	weights = mrl_relative_importance_weights(losses, relative_importance)
+	combined = torch.zeros_like(shared_tensor)
+	for weight, grad in zip(weights, filtered_grads):
+		combined = combined + weight.to(device=grad.device, dtype=grad.dtype) * grad
+	return combined, stats
 
 
 class Matryoshka_CE_Loss(nn.Module):

@@ -109,7 +109,11 @@ Section('training', 'training hyper param stuff').params(
     mrl_loss_mode=Param(And(str, OneOf(['all', 'sampled_prefix'])), 'MRL loss mode', default='all'),
     sampled_prefix_distribution=Param(And(str, OneOf(['uniform', 'inverse_dim', 'inverse_sqrt_dim'])), 'Sampled-prefix MRL distribution', default='uniform'),
     sampled_prefix_log_interval=Param(int, 'Sampled-prefix training log interval in batches', default=100),
-    mrl_gradient_conflict_interval=Param(int, 'Measure MRL CE gradient conflict every N batches; 0 disables it', default=0)
+    mrl_gradient_conflict_interval=Param(int, 'Measure MRL CE gradient conflict every N batches; 0 disables it', default=0),
+    mrl_conflict_gating=Param(int, 'Enable MRL conflict-gated feature gradients? (1/0)', default=0),
+    mrl_conflict_mode=Param(And(str, OneOf(['none', 'block_cascade'])), 'MRL conflict-gating mode', default='none'),
+    mrl_conflict_alpha=Param(float, 'MRL conflict projection strength', default=0.5),
+    mrl_conflict_eps=Param(float, 'MRL conflict projection epsilon', default=1e-8)
 )
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -546,6 +550,81 @@ class ImageNetTrainer:
         prefix_losses = self.loss.per_prefix_losses(output, target)
         return mrl_gradient_conflict_stats(prefix_losses, shared_tensor, self.nesting_list)
 
+    def resolve_mrl_conflict_mode(self, mrl_conflict_gating, mrl_conflict_mode):
+        if not mrl_conflict_gating:
+            return 'none'
+        if mrl_conflict_mode == 'none':
+            return 'block_cascade'
+        return mrl_conflict_mode
+
+    def validate_mrl_conflict_gating(self, mrl_conflict_gating, mrl_conflict_mode):
+        mode = self.resolve_mrl_conflict_mode(mrl_conflict_gating, mrl_conflict_mode)
+        if mode == 'none':
+            return mode
+        if mode != 'block_cascade':
+            raise ValueError(f"Unsupported MRL conflict mode: {mode}")
+        if not self.nesting:
+            raise ValueError("--mrl-conflict-gating requires an MRL model")
+        fc = getattr(self.base_model(), 'fc', None)
+        if not isinstance(fc, MRL_Linear_Layer):
+            raise ValueError("--mrl-conflict-gating currently supports standard MRL/MRL-E heads")
+        if self.sampled_prefix_active():
+            raise ValueError("--mrl-conflict-gating currently requires --training.mrl_loss_mode=all")
+        return mode
+
+    def mrl_conflict_gated_backward(self, target, prefix_losses, alpha, eps):
+        fc = getattr(self.base_model(), 'fc', None)
+        shared_tensor = getattr(fc, 'last_input', None)
+        if shared_tensor is None:
+            raise RuntimeError(
+                "MRL conflict gating requires the MRL head to capture its "
+                "input feature tensor."
+            )
+
+        filtered_feature_grad, conflict_log = mrl_block_cascade_filtered_feature_gradient(
+            prefix_losses,
+            shared_tensor,
+            self.nesting_list,
+            relative_importance=self.loss.relative_importance,
+            alpha=alpha,
+            eps=eps,
+        )
+
+        # Block-wise cascade gating protects each prefix from destructive
+        # gradients coming from the next larger prefix, while keeping useful
+        # aligned gradients and leaving the newly added block unconstrained.
+        with autocast(enabled=self.device.type == 'cuda'):
+            head_output = fc(shared_tensor.detach())
+            head_losses = self.loss.per_prefix_losses(head_output, target)
+            head_loss = self.loss.weighted_all_loss(head_losses)
+        self.scaler.scale(head_loss).backward()
+
+        scaled_feature_grad = filtered_feature_grad * self.scaler.get_scale()
+        shared_tensor.backward(gradient=scaled_feature_grad)
+        return conflict_log
+
+    def print_validation_summary(self, log_dict):
+        epoch = log_dict.get('epoch', '?')
+        train_loss = log_dict.get('train_loss', None)
+        prefix = f"=> Val: epoch={epoch}"
+        if train_loss is not None:
+            prefix += f", train_loss={float(train_loss):.4f}"
+
+        if self.nesting:
+            top1_items = []
+            for dim in self.nesting_list:
+                key = f'top_1_{dim}'
+                if key in log_dict:
+                    top1_items.append(f'{dim}:{100.0 * log_dict[key]:.2f}')
+            if top1_items:
+                print(f"{prefix}, top1[%]=" + ', '.join(top1_items))
+        else:
+            if 'top_1' in log_dict and 'top_5' in log_dict:
+                print(
+                    f"{prefix}, top1={100.0 * log_dict['top_1']:.2f}%, "
+                    f"top5={100.0 * log_dict['top_5']:.2f}%"
+                )
+
     def set_mrl_gradient_conflict_capture(self, enabled):
         fc = getattr(self.base_model(), 'fc', None)
         if hasattr(fc, 'capture_input_for_gradient_conflict'):
@@ -573,6 +652,7 @@ class ImageNetTrainer:
                 d[k]=stats[k]
 
         self.log(dict(d, **extra_dict))
+        self.print_validation_summary(dict(d, **extra_dict))
 
         return stats
 
@@ -660,11 +740,21 @@ class ImageNetTrainer:
     @param('logging.log_level')
     @param('training.sampled_prefix_log_interval')
     @param('training.mrl_gradient_conflict_interval')
+    @param('training.mrl_conflict_gating')
+    @param('training.mrl_conflict_mode')
+    @param('training.mrl_conflict_alpha')
+    @param('training.mrl_conflict_eps')
     def train_loop(self, epoch, log_level, sampled_prefix_log_interval,
-                   mrl_gradient_conflict_interval):
+                   mrl_gradient_conflict_interval, mrl_conflict_gating,
+                   mrl_conflict_mode, mrl_conflict_alpha, mrl_conflict_eps):
         model = self.model
         model.train()
         losses = []
+        mrl_conflict_mode = self.validate_mrl_conflict_gating(
+            bool(mrl_conflict_gating),
+            mrl_conflict_mode,
+        )
+        conflict_gating_active = mrl_conflict_mode == 'block_cascade'
 
         lr_start, lr_end = self.get_lr(epoch), self.get_lr(epoch + 1)
         iters = len(self.train_loader)
@@ -683,18 +773,34 @@ class ImageNetTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             gradient_conflict_log = {}
             should_measure_conflict = (
+                not conflict_gating_active and
                 self.nesting and
                 mrl_gradient_conflict_interval > 0 and
                 (ix == 0 or (ix + 1) % mrl_gradient_conflict_interval == 0)
             )
-            self.set_mrl_gradient_conflict_capture(should_measure_conflict)
+            should_capture_mrl_input = conflict_gating_active or should_measure_conflict
+            self.set_mrl_gradient_conflict_capture(should_capture_mrl_input)
             with autocast(enabled=self.device.type == 'cuda'):
                 output = self.model(images)
-                loss_train = self.loss(output, target)
+                prefix_losses = None
+                if conflict_gating_active:
+                    prefix_losses = self.loss.per_prefix_losses(output, target)
+                    loss_train = self.loss.weighted_all_loss(prefix_losses)
+                else:
+                    loss_train = self.loss(output, target)
                 if should_measure_conflict:
                     gradient_conflict_log = self.mrl_gradient_conflict_log_dict(output, target)
 
-            self.scaler.scale(loss_train).backward()
+            conflict_gating_log = {}
+            if conflict_gating_active:
+                conflict_gating_log = self.mrl_conflict_gated_backward(
+                    target,
+                    prefix_losses,
+                    alpha=mrl_conflict_alpha,
+                    eps=mrl_conflict_eps,
+                )
+            else:
+                self.scaler.scale(loss_train).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.set_mrl_gradient_conflict_capture(False)
@@ -713,6 +819,23 @@ class ImageNetTrainer:
                     'epoch': epoch,
                     'iter': ix,
                     **gradient_conflict_log
+                })
+
+            should_log_conflict_gating = (
+                conflict_gating_log and
+                (
+                    ix == 0 or
+                    (
+                        mrl_gradient_conflict_interval > 0 and
+                        (ix + 1) % mrl_gradient_conflict_interval == 0
+                    )
+                )
+            )
+            if should_log_conflict_gating:
+                self.log({
+                    'epoch': epoch,
+                    'iter': ix,
+                    **conflict_gating_log
                 })
 
             ### Logging start
@@ -895,7 +1018,41 @@ class MeanScalarMetric(torchmetrics.Metric):
         return self.sum.float() / self.count
 
 # Running
+def expand_mrl_conflict_cli_aliases(argv):
+    value_aliases = {
+        '--mrl-conflict-mode': '--training.mrl_conflict_mode',
+        '--mrl-conflict-alpha': '--training.mrl_conflict_alpha',
+        '--mrl-conflict-eps': '--training.mrl_conflict_eps',
+    }
+    expanded = [argv[0]]
+    for arg in argv[1:]:
+        if arg == '--mrl-conflict-gating':
+            expanded.append('--training.mrl_conflict_gating=1')
+            continue
+        if arg.startswith('--mrl-conflict-gating='):
+            expanded.append('--training.mrl_conflict_gating=' + arg.split('=', 1)[1])
+            continue
+        if arg == '--no-mrl-conflict-gating':
+            expanded.append('--training.mrl_conflict_gating=0')
+            continue
+
+        replaced = False
+        for alias, fastargs_name in value_aliases.items():
+            if arg == alias:
+                expanded.append(fastargs_name)
+                replaced = True
+                break
+            if arg.startswith(alias + '='):
+                expanded.append(fastargs_name + arg[len(alias):])
+                replaced = True
+                break
+        if not replaced:
+            expanded.append(arg)
+    return expanded
+
+
 def make_config(quiet=False):
+    sys.argv = expand_mrl_conflict_cli_aliases(sys.argv)
     config = get_current_config()
     parser = ArgumentParser(description='Fast imagenet training')
     config.augment_argparse(parser)

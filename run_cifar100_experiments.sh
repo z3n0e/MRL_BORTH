@@ -30,6 +30,10 @@ MRL_LOSS_MODE=${MRL_LOSS_MODE:-all}
 SAMPLED_PREFIX_DISTRIBUTION=${SAMPLED_PREFIX_DISTRIBUTION:-uniform}
 SAMPLED_PREFIX_LOG_INTERVAL=${SAMPLED_PREFIX_LOG_INTERVAL:-100}
 MRL_GRADIENT_CONFLICT_INTERVAL=${MRL_GRADIENT_CONFLICT_INTERVAL:-0}
+MRL_CONFLICT_GATING=${MRL_CONFLICT_GATING:-0}
+MRL_CONFLICT_MODE=${MRL_CONFLICT_MODE:-none}
+MRL_CONFLICT_ALPHA=${MRL_CONFLICT_ALPHA:-0.5}
+MRL_CONFLICT_EPS=${MRL_CONFLICT_EPS:-1e-8}
 
 # Method toggles.
 RUN_MRL=${RUN_MRL:-1}
@@ -66,12 +70,23 @@ echo "MRL loss mode: $MRL_LOSS_MODE"
 echo "Sampled-prefix distribution: $SAMPLED_PREFIX_DISTRIBUTION"
 echo "Sampled-prefix log interval: $SAMPLED_PREFIX_LOG_INTERVAL"
 echo "MRL gradient conflict interval: $MRL_GRADIENT_CONFLICT_INTERVAL"
+echo "MRL conflict gating: $MRL_CONFLICT_GATING"
+echo "MRL conflict mode: $MRL_CONFLICT_MODE"
+echo "MRL conflict alpha: $MRL_CONFLICT_ALPHA"
+echo "MRL conflict eps: $MRL_CONFLICT_EPS"
 
 MRL_TRAINING_ARGS=(
     --training.mrl_loss_mode="$MRL_LOSS_MODE"
     --training.sampled_prefix_distribution="$SAMPLED_PREFIX_DISTRIBUTION"
     --training.sampled_prefix_log_interval="$SAMPLED_PREFIX_LOG_INTERVAL"
     --training.mrl_gradient_conflict_interval="$MRL_GRADIENT_CONFLICT_INTERVAL"
+)
+
+MRL_CONFLICT_TRAINING_ARGS=(
+    --training.mrl_conflict_gating="$MRL_CONFLICT_GATING"
+    --training.mrl_conflict_mode="$MRL_CONFLICT_MODE"
+    --training.mrl_conflict_alpha="$MRL_CONFLICT_ALPHA"
+    --training.mrl_conflict_eps="$MRL_CONFLICT_EPS"
 )
 
 write_manifest() {
@@ -89,6 +104,10 @@ write_manifest() {
         echo "sampled_prefix_distribution=$SAMPLED_PREFIX_DISTRIBUTION"
         echo "sampled_prefix_log_interval=$SAMPLED_PREFIX_LOG_INTERVAL"
         echo "mrl_gradient_conflict_interval=$MRL_GRADIENT_CONFLICT_INTERVAL"
+        echo "mrl_conflict_gating=$MRL_CONFLICT_GATING"
+        echo "mrl_conflict_mode=$MRL_CONFLICT_MODE"
+        echo "mrl_conflict_alpha=$MRL_CONFLICT_ALPHA"
+        echo "mrl_conflict_eps=$MRL_CONFLICT_EPS"
         echo "fixed_feature_dims=$FIXED_FEATURE_DIMS"
         echo "run_mrl=$RUN_MRL"
         echo "run_mrle=$RUN_MRLE"
@@ -184,6 +203,7 @@ write_manifest
 if [[ "$RUN_MRL" == "1" ]]; then
     train_run mrl \
         "${MRL_TRAINING_ARGS[@]}" \
+        "${MRL_CONFLICT_TRAINING_ARGS[@]}" \
         --model.mrl=1
     eval_run mrl --mrl
 fi
@@ -191,6 +211,7 @@ fi
 if [[ "$RUN_MRLE" == "1" ]]; then
     train_run mrle \
         "${MRL_TRAINING_ARGS[@]}" \
+        "${MRL_CONFLICT_TRAINING_ARGS[@]}" \
         --model.efficient=1
     eval_run mrle --mrl --efficient
 fi
