@@ -52,7 +52,7 @@ Where `nesting_list` is the list of representation sizes we wish to train on, `n
 
 T-Orthogonal MRL implements the transition sketch where the CE losses stay nested at `[8d, 16d, 32d, 64d, ...]`, and each transition `T_i` is its own orthogonal layer. For a nesting list `[8, 16, 32, 64]`, the head creates `T16: 16 -> 16`, `T32: 32 -> 32`, and `T64: 64 -> 64`. The smallest classifier sees the raw 8-dimensional prefix directly. Each larger classifier sees `T_d(h[:d])`, so `T` is always applied to the raw backbone prefix `h` at that scale rather than to an earlier transformed prefix.
 
-This keeps the Matryoshka CE objective at every prefix while making the transition operator explicit and orthogonally constrained. The implementation uses the same orthogonal parametrization options as BOR-MRL.
+This keeps the Matryoshka CE objective at every prefix while making the transition operator explicit and orthogonally constrained. T layers are initialized to identity and can use either `matrix_exp` or `householder` orthogonal parametrization.
 
 Example CIFAR-100 run:
 
@@ -62,7 +62,7 @@ python train_imagenet.py \
   --config-file rn50_configs/rn50_cifar100.yaml \
   --data.root="$HOME/.cache/torchvision" \
   --model.t_orthogonal_mrl=1 \
-  --model.bor_orthogonal_map=matrix_exp \
+  --model.t_orthogonal_map=matrix_exp \
   --logging.folder=./tmp \
   --logging.run_name=t_orthogonal_mrl_cifar100
 ```

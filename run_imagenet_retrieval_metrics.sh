@@ -48,6 +48,7 @@ TRAINING_MRL_CONFLICT_GATING=${MRL_CONFLICT_GATING:-}
 TRAINING_MRL_CONFLICT_MODE=${MRL_CONFLICT_MODE:-}
 TRAINING_MRL_CONFLICT_ALPHA=${MRL_CONFLICT_ALPHA:-}
 TRAINING_MRL_CONFLICT_EPS=${MRL_CONFLICT_EPS:-}
+TRAINING_T_ORTHOGONAL_MAP=${T_ORTHOGONAL_MAP:-}
 TRAINING_BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-}
 
 if [[ -f "$MANIFEST" ]]; then
@@ -77,6 +78,9 @@ if [[ -f "$MANIFEST" ]]; then
             mrl_conflict_eps)
                 [[ -z "$TRAINING_MRL_CONFLICT_EPS" ]] && TRAINING_MRL_CONFLICT_EPS=$value
                 ;;
+            t_orthogonal_map)
+                [[ -z "$TRAINING_T_ORTHOGONAL_MAP" ]] && TRAINING_T_ORTHOGONAL_MAP=$value
+                ;;
             bor_orthogonal_map)
                 [[ -z "$TRAINING_BOR_ORTHOGONAL_MAP" ]] && TRAINING_BOR_ORTHOGONAL_MAP=$value
                 ;;
@@ -92,6 +96,7 @@ TRAINING_MRL_CONFLICT_GATING=${TRAINING_MRL_CONFLICT_GATING:-0}
 TRAINING_MRL_CONFLICT_MODE=${TRAINING_MRL_CONFLICT_MODE:-none}
 TRAINING_MRL_CONFLICT_ALPHA=${TRAINING_MRL_CONFLICT_ALPHA:-0.5}
 TRAINING_MRL_CONFLICT_EPS=${TRAINING_MRL_CONFLICT_EPS:-1e-8}
+TRAINING_T_ORTHOGONAL_MAP=${TRAINING_T_ORTHOGONAL_MAP:-matrix_exp}
 TRAINING_BOR_ORTHOGONAL_MAP=${TRAINING_BOR_ORTHOGONAL_MAP:-matrix_exp}
 
 PYTHON=${PYTHON:-python}
@@ -109,6 +114,7 @@ NESTED_DIMS=${NESTED_DIMS:-"8 16 32 64 128 256 512 1024 2048"}
 USE_GPU=${USE_GPU:-1}
 REBUILD_INDEX=${REBUILD_INDEX:-0}
 FORCE_ARRAYS=${FORCE_ARRAYS:-0}
+T_ORTHOGONAL_MAP=${T_ORTHOGONAL_MAP:-$TRAINING_T_ORTHOGONAL_MAP}
 BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-$TRAINING_BOR_ORTHOGONAL_MAP}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
 BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-1}
@@ -133,6 +139,7 @@ echo "Training MRL conflict gating: $TRAINING_MRL_CONFLICT_GATING"
 echo "Training MRL conflict mode: $TRAINING_MRL_CONFLICT_MODE"
 echo "Training MRL conflict alpha: $TRAINING_MRL_CONFLICT_ALPHA"
 echo "Training MRL conflict eps: $TRAINING_MRL_CONFLICT_EPS"
+echo "T orthogonal map: $T_ORTHOGONAL_MAP"
 echo "BOR orthogonal map: $BOR_ORTHOGONAL_MAP"
 echo "BOR stop gradient: $BOR_STOP_GRADIENT"
 echo "BOR residual alpha init: $BOR_RESIDUAL_ALPHA_INIT"
@@ -261,8 +268,8 @@ run_method t_orthogonal_mrl \
     "$CHECKPOINT_DIR/t_orthogonal_mrl_final_weights.pt" \
     t_orthogonal_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
     --t_orthogonal_mrl \
+    --t_orthogonal_map "$T_ORTHOGONAL_MAP" \
     --bor_mode orthogonal \
-    --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
     --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
     --bor_stop_gradient "$BOR_STOP_GRADIENT"
 

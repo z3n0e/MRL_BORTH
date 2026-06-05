@@ -116,6 +116,7 @@ parser.add_argument('--path', type=str, required=True, help='Path to .pt model c
 parser.add_argument('--old_ckpt', action='store_true', help='To use our trained checkpoints')
 parser.add_argument('--workers', type=int, default=12, help='num workers for dataloader')
 parser.add_argument('--t_orthogonal_mrl', action='store_true', help='Use T-orthogonal transition MRL')
+parser.add_argument('--t_orthogonal_map', type=str, choices=['matrix_exp', 'householder', 'household'], default='matrix_exp', help='T orthogonal parametrization map')
 parser.add_argument('--bor_mrl', action='store_true', help='Use recursive-prefix Block-Orthogonal Residual MRL')
 parser.add_argument('--bor_block_mrl', action='store_true', help='Use independent-block Block-Orthogonal Residual MRL')
 parser.add_argument('--cascade_stop_gradient_mrl', action='store_true', help='Use recursive-prefix stop-gradient MRL without rotations')
@@ -167,7 +168,7 @@ if args.t_orthogonal_mrl:
 		NESTING_LIST,
 		num_classes=num_classes,
 		mode=args.bor_mode,
-		orthogonal_map=args.bor_orthogonal_map,
+		orthogonal_map=args.t_orthogonal_map,
 		use_trivialization=bool(args.bor_use_trivialization),
 		stop_gradient=resolve_stop_gradient_override(args.bor_stop_gradient),
 	)
@@ -285,6 +286,7 @@ if not args.retrieval:
 		'checkpoint': args.path,
 		'mrl': bool(args.mrl),
 		't_orthogonal_mrl': bool(args.t_orthogonal_mrl),
+		't_orthogonal_map': resolve_t_orthogonal_map(args.t_orthogonal_map),
 		'bor_mrl': bool(args.bor_mrl),
 		'bor_block_mrl': bool(args.bor_block_mrl),
 		'cascade_stop_gradient_mrl': bool(args.cascade_stop_gradient_mrl),

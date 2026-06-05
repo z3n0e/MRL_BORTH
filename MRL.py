@@ -14,6 +14,11 @@ Loss function for Matryoshka Representation Learning
 MRL_LOSS_MODES = {"all", "sampled_prefix"}
 SAMPLED_PREFIX_DISTRIBUTIONS = {"uniform", "inverse_dim", "inverse_sqrt_dim"}
 MRL_CONFLICT_MODES = {"none", "block_cascade"}
+T_ORTHOGONAL_MAP_ALIASES = {
+	"matrix_exp": "matrix_exp",
+	"householder": "householder",
+	"household": "householder",
+}
 
 
 def mrl_sampling_probabilities(nesting_list, distribution="uniform"):
@@ -382,9 +387,19 @@ def resolve_stop_gradient(value, default):
 	return bool(value)
 
 
+def resolve_t_orthogonal_map(value):
+	if value not in T_ORTHOGONAL_MAP_ALIASES:
+		raise ValueError(
+			"T orthogonal map must be one of ['householder', 'matrix_exp'], "
+			f"got {value!r}"
+		)
+	return T_ORTHOGONAL_MAP_ALIASES[value]
+
+
 def make_orthogonal_linear_layer(dim, mode="orthogonal",
                                  orthogonal_map="matrix_exp",
-                                 use_trivialization=True):
+                                 use_trivialization=True,
+                                 identity_init=False):
 	allowed_modes = {"orthogonal", "frozen"}
 	allowed_maps = {"matrix_exp", "cayley", "householder"}
 	if mode not in allowed_modes:
@@ -399,7 +414,11 @@ def make_orthogonal_linear_layer(dim, mode="orthogonal",
 
 	layer = nn.Linear(dim, dim, bias=False)
 	if mode == "frozen":
-		nn.init.orthogonal_(layer.weight)
+		with torch.no_grad():
+			if identity_init:
+				layer.weight.copy_(torch.eye(dim))
+			else:
+				nn.init.orthogonal_(layer.weight)
 		layer.weight.requires_grad_(False)
 		return layer
 
@@ -758,11 +777,9 @@ class OrthogonalTransitionLayer(nn.Module):
 	             stop_gradient=False):
 		super().__init__()
 		allowed_modes = {"orthogonal", "frozen"}
-		allowed_maps = {"matrix_exp", "cayley", "householder"}
 		if mode not in allowed_modes:
 			raise ValueError(f"mode must be one of {sorted(allowed_modes)}, got {mode!r}")
-		if orthogonal_map not in allowed_maps:
-			raise ValueError(f"orthogonal_map must be one of {sorted(allowed_maps)}, got {orthogonal_map!r}")
+		orthogonal_map = resolve_t_orthogonal_map(orthogonal_map)
 		if mode == "orthogonal" and orthogonal is None:
 			raise RuntimeError(
 				"torch.nn.utils.parametrizations.orthogonal is required "
@@ -783,6 +800,7 @@ class OrthogonalTransitionLayer(nn.Module):
 				mode=self.mode,
 				orthogonal_map=self.orthogonal_map,
 				use_trivialization=self.use_trivialization,
+				identity_init=True,
 			)
 			for dim in self.nesting_list[1:]
 		])

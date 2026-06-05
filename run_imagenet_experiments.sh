@@ -65,6 +65,7 @@ RUN_BOR_MRL_HOUSEHOLDER=${RUN_BOR_MRL_HOUSEHOLDER:-1}
 FIXED_FEATURE_DIMS=${FIXED_FEATURE_DIMS:-"8 16 32 64 128 256 512 1024"}
 
 # BOR-MRL knobs.
+T_ORTHOGONAL_MAP=${T_ORTHOGONAL_MAP:-matrix_exp}
 BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-matrix_exp}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
 BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-1}
@@ -89,6 +90,7 @@ echo "MRL conflict gating: $MRL_CONFLICT_GATING"
 echo "MRL conflict mode: $MRL_CONFLICT_MODE"
 echo "MRL conflict alpha: $MRL_CONFLICT_ALPHA"
 echo "MRL conflict eps: $MRL_CONFLICT_EPS"
+echo "T orthogonal map: $T_ORTHOGONAL_MAP"
 
 MRL_TRAINING_ARGS=(
     --training.mrl_loss_mode="$MRL_LOSS_MODE"
@@ -136,6 +138,7 @@ write_manifest() {
         echo "run_bor_mrl_frozen=$RUN_BOR_MRL_FROZEN"
         echo "run_bor_mrl_cayley=$RUN_BOR_MRL_CAYLEY"
         echo "run_bor_mrl_householder=$RUN_BOR_MRL_HOUSEHOLDER"
+        echo "t_orthogonal_map=$T_ORTHOGONAL_MAP"
         echo "bor_orthogonal_map=$BOR_ORTHOGONAL_MAP"
         echo "bor_use_trivialization=$BOR_USE_TRIVIALIZATION"
         echo "bor_stop_gradient=$BOR_STOP_GRADIENT"
@@ -237,14 +240,14 @@ if [[ "$RUN_T_ORTHOGONAL_MRL" == "1" ]]; then
     train_run t_orthogonal_mrl \
         "${MRL_TRAINING_ARGS[@]}" \
         --model.t_orthogonal_mrl=1 \
+        --model.t_orthogonal_map="$T_ORTHOGONAL_MAP" \
         --model.bor_mode=orthogonal \
-        --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
         --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION" \
         --model.bor_stop_gradient="$BOR_STOP_GRADIENT"
     eval_run t_orthogonal_mrl \
         --t_orthogonal_mrl \
+        --t_orthogonal_map "$T_ORTHOGONAL_MAP" \
         --bor_mode orthogonal \
-        --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
         --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
         --bor_stop_gradient "$BOR_STOP_GRADIENT"
 fi

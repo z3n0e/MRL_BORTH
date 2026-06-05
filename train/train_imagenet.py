@@ -48,6 +48,7 @@ Section('model', 'model details').params(
     nesting_start=Param(int, '2**i will be starting dimension for nesting', default=3),
     fixed_feature=Param(int, 'In case we want to do the fixed feature training, by default it is 2048', default=2048),
     t_orthogonal_mrl=Param(int, 'Use T-orthogonal transition MRL? (1/0)', default=0),
+    t_orthogonal_map=Param(And(str, OneOf(['matrix_exp', 'householder', 'household'])), 'T orthogonal parametrization map', default='matrix_exp'),
     bor_mrl=Param(int, 'Use recursive-prefix Block-Orthogonal Residual MRL? (1/0)', default=0),
     bor_block_mrl=Param(int, 'Use independent-block Block-Orthogonal Residual MRL? (1/0)', default=0),
     cascade_stop_gradient_mrl=Param(int, 'Use recursive-prefix stop-gradient MRL without rotations? (1/0)', default=0),
@@ -665,6 +666,7 @@ class ImageNetTrainer:
     @param('model.arch')
     @param('model.pretrained')
     @param('training.use_blurpool') # Later Arguments for nesting/fixed_feat
+    @param('model.t_orthogonal_map')
     @param('model.bor_mode')
     @param('model.bor_orthogonal_map')
     @param('model.bor_use_trivialization')
@@ -673,6 +675,7 @@ class ImageNetTrainer:
     @param('model.bor_residual_alpha_init')
     @param('model.cascade_stop_gradient')
     def create_model_and_scaler(self, arch, pretrained, use_blurpool,
+                                t_orthogonal_map,
                                 bor_mode, bor_orthogonal_map, bor_use_trivialization,
                                 bor_stop_gradient, bor_residual_orthogonal,
                                 bor_residual_alpha_init, cascade_stop_gradient):
@@ -693,7 +696,7 @@ class ImageNetTrainer:
                 self.nesting_list,
                 num_classes=self.num_classes,
                 mode=bor_mode,
-                orthogonal_map=bor_orthogonal_map,
+                orthogonal_map=t_orthogonal_map,
                 use_trivialization=bool(bor_use_trivialization),
                 stop_gradient=resolve_stop_gradient_override(bor_stop_gradient),
             )

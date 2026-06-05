@@ -12,6 +12,7 @@ lr:
 model:
   arch: resnet50
   t_orthogonal_mrl: 0
+  t_orthogonal_map: matrix_exp
   bor_mrl: 0
   bor_block_mrl: 0
   cascade_stop_gradient_mrl: 0

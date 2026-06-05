@@ -404,6 +404,46 @@ def test_orthogonal_transition_layer_builds_t_prefixes():
 		assert torch.equal(prefix, t_output)
 
 
+def test_orthogonal_transition_layer_t_layers_start_as_identity():
+	layer = OrthogonalTransitionLayer(
+		[8, 16, 32],
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+	)
+
+	for t_layer in layer.t_layers:
+		weight = t_layer.weight
+		eye = torch.eye(weight.shape[0], device=weight.device, dtype=weight.dtype)
+		assert torch.allclose(weight, eye, atol=1e-4, rtol=1e-4)
+
+
+def test_orthogonal_transition_layer_supports_householder_t_map():
+	layer = OrthogonalTransitionLayer(
+		[8, 16, 32],
+		mode="orthogonal",
+		orthogonal_map="householder",
+	)
+	x = torch.randn(4, 32)
+	prefixes = layer(x)
+
+	assert [prefix.shape for prefix in prefixes] == [(4, 8), (4, 16), (4, 32)]
+	for t_layer in layer.t_layers:
+		weight = t_layer.weight
+		eye = torch.eye(weight.shape[0], device=weight.device, dtype=weight.dtype)
+		assert torch.allclose(weight, eye, atol=1e-4, rtol=1e-4)
+		assert torch.allclose(weight @ weight.t(), eye, atol=1e-4, rtol=1e-4)
+
+
+def test_frozen_orthogonal_transition_layer_t_layers_start_as_identity():
+	layer = OrthogonalTransitionLayer([8, 16, 32], mode="frozen")
+
+	for t_layer in layer.t_layers:
+		weight = t_layer.weight
+		eye = torch.eye(weight.shape[0], device=weight.device, dtype=weight.dtype)
+		assert torch.allclose(weight, eye, atol=1e-6, rtol=1e-6)
+		assert not weight.requires_grad
+
+
 def test_orthogonal_transition_layer_applies_each_t_to_raw_h_prefix():
 	layer = OrthogonalTransitionLayer([8, 16, 32], mode="frozen")
 	with torch.no_grad():
