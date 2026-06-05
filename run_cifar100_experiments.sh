@@ -19,6 +19,7 @@ CIFAR100_DIR=${CIFAR100_DIR:-"$HOME/.cache/torchvision"}
 EXPERIMENT_DIR=${EXPERIMENT_DIR:-"$ROOT_DIR/cifar100_runs/cifar100_seed_${SEED}_$(date +%Y%m%d_%H%M%S)"}
 
 # Training knobs.
+PYTHON=${PYTHON:-python}
 EPOCHS=${EPOCHS:-40}
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-256}
 VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-256}
@@ -40,6 +41,7 @@ RUN_MRL=${RUN_MRL:-1}
 RUN_MRLE=${RUN_MRLE:-0}
 RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-0}
 RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-0}
+RUN_T_ORTHOGONAL_MRL=${RUN_T_ORTHOGONAL_MRL:-0}
 RUN_BOR_MRL=${RUN_BOR_MRL:-0}
 RUN_BOR_MRL_RESIDUAL=${RUN_BOR_MRL_RESIDUAL:-0}
 RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-0}
@@ -95,6 +97,7 @@ write_manifest() {
         echo "seed=$SEED"
         echo "deterministic=$DETERMINISTIC"
         echo "cifar100_dir=$CIFAR100_DIR"
+        echo "python=$PYTHON"
         echo "epochs=$EPOCHS"
         echo "train_batch_size=$TRAIN_BATCH_SIZE"
         echo "val_batch_size=$VAL_BATCH_SIZE"
@@ -113,6 +116,7 @@ write_manifest() {
         echo "run_mrle=$RUN_MRLE"
         echo "run_full_feature=$RUN_FULL_FEATURE"
         echo "run_fixed_feature=$RUN_FIXED_FEATURE"
+        echo "run_t_orthogonal_mrl=$RUN_T_ORTHOGONAL_MRL"
         echo "run_bor_mrl=$RUN_BOR_MRL"
         echo "run_bor_mrl_residual=$RUN_BOR_MRL_RESIDUAL"
         echo "run_bor_block_mrl=$RUN_BOR_BLOCK_MRL"
@@ -142,7 +146,7 @@ train_run() {
     echo "Training $run_name..."
     (
         cd "$ROOT_DIR/train"
-        python train_imagenet.py \
+        "$PYTHON" train_imagenet.py \
             --config-file rn50_configs/rn50_cifar100.yaml \
             --data.root="$CIFAR100_DIR" \
             --data.num_workers="$NUM_WORKERS" \
@@ -186,7 +190,7 @@ eval_run() {
     echo "Evaluating $run_name..."
     (
         cd "$ROOT_DIR/inference"
-        python pytorch_inference.py \
+        "$PYTHON" pytorch_inference.py \
             --path "$checkpoint" \
             --dataset CIFAR100 \
             --data_root "$CIFAR100_DIR" \
@@ -214,6 +218,22 @@ if [[ "$RUN_MRLE" == "1" ]]; then
         "${MRL_CONFLICT_TRAINING_ARGS[@]}" \
         --model.efficient=1
     eval_run mrle --mrl --efficient
+fi
+
+if [[ "$RUN_T_ORTHOGONAL_MRL" == "1" ]]; then
+    train_run t_orthogonal_mrl \
+        "${MRL_TRAINING_ARGS[@]}" \
+        --model.t_orthogonal_mrl=1 \
+        --model.bor_mode=orthogonal \
+        --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION" \
+        --model.bor_stop_gradient="$BOR_STOP_GRADIENT"
+    eval_run t_orthogonal_mrl \
+        --t_orthogonal_mrl \
+        --bor_mode orthogonal \
+        --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+        --bor_stop_gradient "$BOR_STOP_GRADIENT"
 fi
 
 if [[ "$RUN_BOR_MRL" == "1" ]]; then

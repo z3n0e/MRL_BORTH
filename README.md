@@ -48,6 +48,25 @@ fc_layer = MRL_Linear_Layer(nesting_list, num_classes=1000, efficient=efficient)
 ```
 Where `nesting_list` is the list of representation sizes we wish to train on, `num_classes` is the number of output features, and the `efficient` flag is to train MRL-E.
 
+## T-Orthogonal MRL
+
+T-Orthogonal MRL implements the transition sketch where the CE losses stay nested at `[8d, 16d, 32d, 64d, ...]`, and each transition `T_i` is its own orthogonal layer. For a nesting list `[8, 16, 32, 64]`, the head creates `T16: 16 -> 16`, `T32: 32 -> 32`, and `T64: 64 -> 64`. The smallest classifier sees the raw 8-dimensional prefix directly. Each larger classifier sees `T_d(h[:d])`, so `T` is always applied to the raw backbone prefix `h` at that scale rather than to an earlier transformed prefix.
+
+This keeps the Matryoshka CE objective at every prefix while making the transition operator explicit and orthogonally constrained. The implementation uses the same orthogonal parametrization options as BOR-MRL.
+
+Example CIFAR-100 run:
+
+```bash
+cd train
+python train_imagenet.py \
+  --config-file rn50_configs/rn50_cifar100.yaml \
+  --data.root="$HOME/.cache/torchvision" \
+  --model.t_orthogonal_mrl=1 \
+  --model.bor_orthogonal_map=matrix_exp \
+  --logging.folder=./tmp \
+  --logging.run_name=t_orthogonal_mrl_cifar100
+```
+
 ## Block-Orthogonal Residual MRL / BOR-MRL
 
 BOR-MRL is a prefix-preserving variant of Matryoshka training. Standard MRL applies classifiers to coordinate prefixes of one feature vector. The main BOR-MRL method keeps the smallest prefix unchanged, then builds each larger representation by passing the previously built prefix through an orthogonal layer and concatenating the next raw residual block. For example, with `[8, 16, 32]`, the 8-dimensional classifier sees raw `h[:8]`; the 16-dimensional classifier sees `[Q_8 h[:8], h[8:16]]`; the 32-dimensional classifier sees `[Q_16 z_16, h[16:32]]`.

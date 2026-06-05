@@ -47,6 +47,7 @@ Section('model', 'model details').params(
     mrl=Param(int, "MRL?", default=0),
     nesting_start=Param(int, '2**i will be starting dimension for nesting', default=3),
     fixed_feature=Param(int, 'In case we want to do the fixed feature training, by default it is 2048', default=2048),
+    t_orthogonal_mrl=Param(int, 'Use T-orthogonal transition MRL? (1/0)', default=0),
     bor_mrl=Param(int, 'Use recursive-prefix Block-Orthogonal Residual MRL? (1/0)', default=0),
     bor_block_mrl=Param(int, 'Use independent-block Block-Orthogonal Residual MRL? (1/0)', default=0),
     cascade_stop_gradient_mrl=Param(int, 'Use recursive-prefix stop-gradient MRL without rotations? (1/0)', default=0),
@@ -192,6 +193,7 @@ class BlurPoolConv2d(ch.nn.Module):
 class ImageNetTrainer:
     @param('model.efficient')
     @param('model.mrl')
+    @param('model.t_orthogonal_mrl')
     @param('model.bor_mrl')
     @param('model.bor_block_mrl')
     @param('model.cascade_stop_gradient_mrl')
@@ -200,7 +202,8 @@ class ImageNetTrainer:
     @param('data.dataset')
     @param('training.seed')
     @param('training.deterministic')
-    def __init__(self, efficient, mrl, bor_mrl, bor_block_mrl,
+    def __init__(self, efficient, mrl, t_orthogonal_mrl,
+                 bor_mrl, bor_block_mrl,
                  cascade_stop_gradient_mrl,
                  nesting_start, fixed_feature,
                  dataset, seed, deterministic):
@@ -211,18 +214,21 @@ class ImageNetTrainer:
         self.device = ch.device('cuda' if ch.cuda.is_available() else 'cpu')
         self.num_gpus = ch.cuda.device_count() if self.device.type == 'cuda' else 0
         self.efficient = efficient
+        self.t_orthogonal_mrl = bool(t_orthogonal_mrl)
         self.bor_mrl = bool(bor_mrl)
         self.bor_block_mrl = bool(bor_block_mrl)
         self.cascade_stop_gradient_mrl = bool(cascade_stop_gradient_mrl)
         exclusive_mrl_variants = [
+            self.t_orthogonal_mrl,
             self.bor_mrl,
             self.bor_block_mrl,
             self.cascade_stop_gradient_mrl,
         ]
         if sum(exclusive_mrl_variants) > 1:
             raise ValueError(
-                "Choose only one custom MRL method: --model.bor_mrl=1, "
-                "--model.bor_block_mrl=1, or --model.cascade_stop_gradient_mrl=1."
+                "Choose only one custom MRL method: --model.t_orthogonal_mrl=1, "
+                "--model.bor_mrl=1, --model.bor_block_mrl=1, "
+                "or --model.cascade_stop_gradient_mrl=1."
             )
         if any(exclusive_mrl_variants) and mrl:
             raise ValueError("Custom MRL variants are their own MRL methods; do not combine them with --model.mrl=1.")
@@ -681,7 +687,17 @@ class ImageNetTrainer:
         scaler = GradScaler(enabled=self.device.type == 'cuda')
         model = getattr(models, arch)(pretrained=pretrained)
 
-        if self.bor_mrl:
+        if self.t_orthogonal_mrl:
+            print("Creating classification layer of type :\t T-Orthogonal MRL")
+            model.fc = TOrthogonalMRLHead(
+                self.nesting_list,
+                num_classes=self.num_classes,
+                mode=bor_mode,
+                orthogonal_map=bor_orthogonal_map,
+                use_trivialization=bool(bor_use_trivialization),
+                stop_gradient=resolve_stop_gradient_override(bor_stop_gradient),
+            )
+        elif self.bor_mrl:
             print("Creating classification layer of type :\t BOR-MRL (recursive prefix)")
             model.fc = BlockOrthogonalResidualMRLHead(
                 self.nesting_list,

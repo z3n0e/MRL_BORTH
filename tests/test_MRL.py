@@ -12,6 +12,8 @@ from MRL import (
     IndependentBlockOrthogonalMRLHead,
     Matryoshka_CE_Loss,
     MRL_Linear_Layer,
+    OrthogonalTransitionLayer,
+    TOrthogonalMRLHead,
     block_cascade_conflict_gating,
     block_widths_from_nesting_list,
     mrl_block_cascade_filtered_feature_gradient,
@@ -380,6 +382,89 @@ def test_cascade_stop_gradient_mrl_head_output_shapes_and_prefixes():
 		assert torch.equal(prefix, x[:, :dim])
 	for logits in output:
 		assert logits.shape == (5, 10)
+
+
+def test_orthogonal_transition_layer_builds_t_prefixes():
+	layer = OrthogonalTransitionLayer(
+		[8, 16, 32, 64],
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+	)
+	x = torch.randn(4, 64)
+
+	prefixes, blocks, t_outputs = layer(x, return_details=True)
+
+	assert layer.get_block_widths() == [8, 8, 16, 32]
+	assert layer.get_t_dims() == [16, 32, 64]
+	assert [block.shape for block in blocks] == [(4, 8), (4, 8), (4, 16), (4, 32)]
+	assert [prefix.shape for prefix in prefixes] == [(4, 8), (4, 16), (4, 32), (4, 64)]
+	assert [t_output.shape for t_output in t_outputs] == [(4, 16), (4, 32), (4, 64)]
+	assert torch.equal(prefixes[0], x[:, :8])
+	for prefix, t_output in zip(prefixes[1:], t_outputs):
+		assert torch.equal(prefix, t_output)
+
+
+def test_orthogonal_transition_layer_applies_each_t_to_raw_h_prefix():
+	layer = OrthogonalTransitionLayer([8, 16, 32], mode="frozen")
+	with torch.no_grad():
+		layer.t_layers[0].weight.copy_(-torch.eye(16))
+		layer.t_layers[1].weight.copy_(torch.eye(32))
+
+	x = torch.randn(4, 32)
+	prefixes = layer(x)
+
+	assert torch.allclose(prefixes[0], x[:, :8])
+	assert torch.allclose(prefixes[1], -x[:, :16])
+	assert torch.allclose(prefixes[2], x[:, :32])
+
+
+def test_t_orthogonal_mrl_head_output_shapes_and_orthogonal_t_layers():
+	head = TOrthogonalMRLHead(
+		[8, 16, 32, 64],
+		num_classes=10,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+	)
+	output = head(torch.randn(5, 64))
+
+	assert isinstance(output, tuple)
+	assert len(output) == 4
+	assert head.get_t_dims() == [16, 32, 64]
+	assert len(head.t_layers) == 3
+	assert [layer.in_features for layer in head.t_layers] == [16, 32, 64]
+	assert [layer.out_features for layer in head.t_layers] == [16, 32, 64]
+	assert [prefix.shape for prefix in head.last_prefixes] == [(5, 8), (5, 16), (5, 32), (5, 64)]
+	for logits in output:
+		assert logits.shape == (5, 10)
+
+	for layer in head.t_layers:
+		weight = layer.weight
+		eye = torch.eye(weight.shape[0], device=weight.device, dtype=weight.dtype)
+		assert torch.allclose(weight @ weight.t(), eye, atol=1e-4, rtol=1e-4)
+		assert torch.allclose(weight.t() @ weight, eye, atol=1e-4, rtol=1e-4)
+
+
+def test_t_orthogonal_mrl_backward():
+	head = TOrthogonalMRLHead(
+		[8, 16, 32],
+		num_classes=10,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+	)
+	x = torch.randn(5, 32, requires_grad=True)
+	target = torch.empty(5, dtype=torch.long).random_(10)
+	output = head(x)
+	loss = sum(F.cross_entropy(logits, target) for logits in output)
+	loss.backward()
+
+	assert x.grad is not None
+	assert torch.isfinite(x.grad).all()
+	assert any(
+		param.grad is not None
+		for layer in head.t_layers
+		for param in layer.parameters()
+		if param.requires_grad
+	)
 
 
 def test_bor_mrl_uses_prefix_orthogonal_layers():

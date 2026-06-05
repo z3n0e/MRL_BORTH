@@ -7,6 +7,7 @@ MODEL_DIRS = {
     "mrl": "mrl",
     "mrl_e": "mrl_e",
     "ff": "ff",
+    "t_orthogonal_mrl": "t_orthogonal_mrl",
     "bor_mrl": "bor_mrl",
     "bor_block_mrl": "bor_block_mrl",
     "cascade_stop_gradient_mrl": "cascade_stop_gradient_mrl",
@@ -25,6 +26,10 @@ MODEL_ALIASES = {
     "fixed": "ff",
     "fixed_feature": "ff",
     "full_feature": "ff",
+    "t": "t_orthogonal_mrl",
+    "t_orthogonal": "t_orthogonal_mrl",
+    "t_orthogonal_mrl": "t_orthogonal_mrl",
+    "t-orthogonal-mrl": "t_orthogonal_mrl",
     "bor": "bor_mrl",
     "bor_mrl": "bor_mrl",
     "bor-mrl": "bor_mrl",
@@ -68,7 +73,7 @@ def default_feature_config_candidates(model, rep_size):
             f"mrl1_e1_ff{rep_size}",
             f"mrl0_e1_ff{rep_size}",  # Legacy notebook naming.
         ]
-    if model.startswith("bor_"):
+    if model == "t_orthogonal_mrl" or model.startswith("bor_"):
         return [f"mrl0_e0_ff{rep_size}"]
     return [f"mrl0_e0_ff{rep_size}"]
 

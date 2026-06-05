@@ -54,6 +54,7 @@ RUN_MRL=${RUN_MRL:-1}
 RUN_MRLE=${RUN_MRLE:-1}
 RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-1}
 RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-1}
+RUN_T_ORTHOGONAL_MRL=${RUN_T_ORTHOGONAL_MRL:-0}
 RUN_BOR_MRL=${RUN_BOR_MRL:-1}
 RUN_BOR_MRL_RESIDUAL=${RUN_BOR_MRL_RESIDUAL:-1}
 RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-1}
@@ -127,6 +128,7 @@ write_manifest() {
         echo "run_mrle=$RUN_MRLE"
         echo "run_full_feature=$RUN_FULL_FEATURE"
         echo "run_fixed_feature=$RUN_FIXED_FEATURE"
+        echo "run_t_orthogonal_mrl=$RUN_T_ORTHOGONAL_MRL"
         echo "run_bor_mrl=$RUN_BOR_MRL"
         echo "run_bor_mrl_residual=$RUN_BOR_MRL_RESIDUAL"
         echo "run_bor_block_mrl=$RUN_BOR_BLOCK_MRL"
@@ -229,6 +231,22 @@ if [[ "$RUN_MRLE" == "1" ]]; then
         "${MRL_CONFLICT_TRAINING_ARGS[@]}" \
         --model.efficient=1
     eval_run mrle --mrl --efficient
+fi
+
+if [[ "$RUN_T_ORTHOGONAL_MRL" == "1" ]]; then
+    train_run t_orthogonal_mrl \
+        "${MRL_TRAINING_ARGS[@]}" \
+        --model.t_orthogonal_mrl=1 \
+        --model.bor_mode=orthogonal \
+        --model.bor_orthogonal_map="$BOR_ORTHOGONAL_MAP" \
+        --model.bor_use_trivialization="$BOR_USE_TRIVIALIZATION" \
+        --model.bor_stop_gradient="$BOR_STOP_GRADIENT"
+    eval_run t_orthogonal_mrl \
+        --t_orthogonal_mrl \
+        --bor_mode orthogonal \
+        --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
+        --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+        --bor_stop_gradient "$BOR_STOP_GRADIENT"
 fi
 
 if [[ "$RUN_BOR_MRL" == "1" ]]; then

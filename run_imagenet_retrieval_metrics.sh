@@ -48,6 +48,7 @@ TRAINING_MRL_CONFLICT_GATING=${MRL_CONFLICT_GATING:-}
 TRAINING_MRL_CONFLICT_MODE=${MRL_CONFLICT_MODE:-}
 TRAINING_MRL_CONFLICT_ALPHA=${MRL_CONFLICT_ALPHA:-}
 TRAINING_MRL_CONFLICT_EPS=${MRL_CONFLICT_EPS:-}
+TRAINING_BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-}
 
 if [[ -f "$MANIFEST" ]]; then
     while IFS='=' read -r key value; do
@@ -76,6 +77,9 @@ if [[ -f "$MANIFEST" ]]; then
             mrl_conflict_eps)
                 [[ -z "$TRAINING_MRL_CONFLICT_EPS" ]] && TRAINING_MRL_CONFLICT_EPS=$value
                 ;;
+            bor_orthogonal_map)
+                [[ -z "$TRAINING_BOR_ORTHOGONAL_MAP" ]] && TRAINING_BOR_ORTHOGONAL_MAP=$value
+                ;;
         esac
     done < "$MANIFEST"
 fi
@@ -88,6 +92,7 @@ TRAINING_MRL_CONFLICT_GATING=${TRAINING_MRL_CONFLICT_GATING:-0}
 TRAINING_MRL_CONFLICT_MODE=${TRAINING_MRL_CONFLICT_MODE:-none}
 TRAINING_MRL_CONFLICT_ALPHA=${TRAINING_MRL_CONFLICT_ALPHA:-0.5}
 TRAINING_MRL_CONFLICT_EPS=${TRAINING_MRL_CONFLICT_EPS:-1e-8}
+TRAINING_BOR_ORTHOGONAL_MAP=${TRAINING_BOR_ORTHOGONAL_MAP:-matrix_exp}
 
 PYTHON=${PYTHON:-python}
 RETRIEVAL_ROOT=${RETRIEVAL_ROOT:-"$RUN_DIR/retrieval"}
@@ -104,6 +109,7 @@ NESTED_DIMS=${NESTED_DIMS:-"8 16 32 64 128 256 512 1024 2048"}
 USE_GPU=${USE_GPU:-1}
 REBUILD_INDEX=${REBUILD_INDEX:-0}
 FORCE_ARRAYS=${FORCE_ARRAYS:-0}
+BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-$TRAINING_BOR_ORTHOGONAL_MAP}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
 BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-1}
 BOR_RESIDUAL_ALPHA_INIT=${BOR_RESIDUAL_ALPHA_INIT:--3.0}
@@ -127,6 +133,7 @@ echo "Training MRL conflict gating: $TRAINING_MRL_CONFLICT_GATING"
 echo "Training MRL conflict mode: $TRAINING_MRL_CONFLICT_MODE"
 echo "Training MRL conflict alpha: $TRAINING_MRL_CONFLICT_ALPHA"
 echo "Training MRL conflict eps: $TRAINING_MRL_CONFLICT_EPS"
+echo "BOR orthogonal map: $BOR_ORTHOGONAL_MAP"
 echo "BOR stop gradient: $BOR_STOP_GRADIENT"
 echo "BOR residual alpha init: $BOR_RESIDUAL_ALPHA_INIT"
 echo "Cascade stop gradient: $CASCADE_STOP_GRADIENT"
@@ -250,6 +257,15 @@ run_method mrle \
     mrl_e 2048 "$NESTED_DIMS" mrl1_e1_ff2048 \
     --mrl --efficient
 
+run_method t_orthogonal_mrl \
+    "$CHECKPOINT_DIR/t_orthogonal_mrl_final_weights.pt" \
+    t_orthogonal_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
+    --t_orthogonal_mrl \
+    --bor_mode orthogonal \
+    --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
+    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
+    --bor_stop_gradient "$BOR_STOP_GRADIENT"
+
 run_method full_feature \
     "$CHECKPOINT_DIR/full_feature_final_weights.pt" \
     ff 2048 "2048" mrl0_e0_ff2048 \
@@ -269,7 +285,7 @@ run_method bor_mrl \
     bor_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
     --bor_mrl \
     --bor_mode orthogonal \
-    --bor_orthogonal_map matrix_exp \
+    --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
     --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
     --bor_stop_gradient "$BOR_STOP_GRADIENT"
 
@@ -278,7 +294,7 @@ run_method bor_mrl_residual \
     bor_mrl_residual 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
     --bor_mrl \
     --bor_mode orthogonal \
-    --bor_orthogonal_map matrix_exp \
+    --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
     --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
     --bor_stop_gradient "$BOR_STOP_GRADIENT" \
     --bor_residual_orthogonal 1 \
@@ -289,7 +305,7 @@ run_method bor_block_mrl \
     bor_block_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
     --bor_block_mrl \
     --bor_mode orthogonal \
-    --bor_orthogonal_map matrix_exp \
+    --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
     --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
     --bor_stop_gradient "$BOR_STOP_GRADIENT"
 

@@ -115,6 +115,7 @@ parser.add_argument('--rep_size', type=int, default=2048, help='Rep. size for fi
 parser.add_argument('--path', type=str, required=True, help='Path to .pt model checkpoint')
 parser.add_argument('--old_ckpt', action='store_true', help='To use our trained checkpoints')
 parser.add_argument('--workers', type=int, default=12, help='num workers for dataloader')
+parser.add_argument('--t_orthogonal_mrl', action='store_true', help='Use T-orthogonal transition MRL')
 parser.add_argument('--bor_mrl', action='store_true', help='Use recursive-prefix Block-Orthogonal Residual MRL')
 parser.add_argument('--bor_block_mrl', action='store_true', help='Use independent-block Block-Orthogonal Residual MRL')
 parser.add_argument('--cascade_stop_gradient_mrl', action='store_true', help='Use recursive-prefix stop-gradient MRL without rotations')
@@ -144,12 +145,13 @@ parser.add_argument('--retrieval_array_path', default='', help='path to save dat
 
 args = parser.parse_args()
 custom_mrl_variants = [
+	args.t_orthogonal_mrl,
 	args.bor_mrl,
 	args.bor_block_mrl,
 	args.cascade_stop_gradient_mrl,
 ]
 if sum(custom_mrl_variants) > 1:
-	raise ValueError("Choose only one custom MRL method: --bor_mrl, --bor_block_mrl, or --cascade_stop_gradient_mrl.")
+	raise ValueError("Choose only one custom MRL method: --t_orthogonal_mrl, --bor_mrl, --bor_block_mrl, or --cascade_stop_gradient_mrl.")
 if any(custom_mrl_variants) and args.mrl:
 	raise ValueError("Custom MRL variants are their own MRL methods; do not combine them with --mrl.")
 if any(custom_mrl_variants) and args.efficient:
@@ -160,7 +162,16 @@ num_classes = dataset_config['num_classes']
 data_root = Path(args.data_root)
 
 model = resnet50(False)
-if args.bor_mrl:
+if args.t_orthogonal_mrl:
+	model.fc = TOrthogonalMRLHead(
+		NESTING_LIST,
+		num_classes=num_classes,
+		mode=args.bor_mode,
+		orthogonal_map=args.bor_orthogonal_map,
+		use_trivialization=bool(args.bor_use_trivialization),
+		stop_gradient=resolve_stop_gradient_override(args.bor_stop_gradient),
+	)
+elif args.bor_mrl:
 	model.fc = BlockOrthogonalResidualMRLHead(
 		NESTING_LIST,
 		num_classes=num_classes,
@@ -201,7 +212,7 @@ apply_blurpool(model)
 model.load_state_dict(get_ckpt(args.path)) # Accept DataParallel/legacy module-prefixed checkpoints.
 model = model.cuda()
 model.eval()
-is_nested_model = args.mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl
+is_nested_model = args.mrl or args.t_orthogonal_mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl
 
 normalize = transforms.Normalize(mean=dataset_config['mean'], std=dataset_config['std'])
 test_transform = transforms.Compose([
@@ -273,6 +284,7 @@ if not args.retrieval:
 		'dataset': args.dataset,
 		'checkpoint': args.path,
 		'mrl': bool(args.mrl),
+		't_orthogonal_mrl': bool(args.t_orthogonal_mrl),
 		'bor_mrl': bool(args.bor_mrl),
 		'bor_block_mrl': bool(args.bor_block_mrl),
 		'cascade_stop_gradient_mrl': bool(args.cascade_stop_gradient_mrl),
@@ -298,7 +310,7 @@ if not args.retrieval:
 
 	# saving torch tensor for model analysis... 
 	if args.save_logits or args.save_softmax or args.save_predictions:
-		save_string = f"mrl={args.mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_cascade_stop_gradient_mrl={args.cascade_stop_gradient_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
+		save_string = f"mrl={args.mrl}_t_orthogonal_mrl={args.t_orthogonal_mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_cascade_stop_gradient_mrl={args.cascade_stop_gradient_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
 		if args.save_logits:
 			torch.save(logits, save_string+"_logits.pth")
 		if args.save_predictions:

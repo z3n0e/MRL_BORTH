@@ -752,6 +752,158 @@ class CascadeStopGradientMRLHead(nn.Module):
 		return torch.stack([block.norm(p=2, dim=1).mean() for block in self.last_blocks])
 
 
+class OrthogonalTransitionLayer(nn.Module):
+	def __init__(self, nesting_list, mode="orthogonal",
+	             orthogonal_map="matrix_exp", use_trivialization=True,
+	             stop_gradient=False):
+		super().__init__()
+		allowed_modes = {"orthogonal", "frozen"}
+		allowed_maps = {"matrix_exp", "cayley", "householder"}
+		if mode not in allowed_modes:
+			raise ValueError(f"mode must be one of {sorted(allowed_modes)}, got {mode!r}")
+		if orthogonal_map not in allowed_maps:
+			raise ValueError(f"orthogonal_map must be one of {sorted(allowed_maps)}, got {orthogonal_map!r}")
+		if mode == "orthogonal" and orthogonal is None:
+			raise RuntimeError(
+				"torch.nn.utils.parametrizations.orthogonal is required "
+				"for OrthogonalTransitionLayer(mode='orthogonal')"
+			)
+
+		self.nesting_list = [int(dim) for dim in nesting_list]
+		self.block_widths = block_widths_from_nesting_list(self.nesting_list)
+		self.mode = mode
+		self.orthogonal_map = orthogonal_map
+		self.use_trivialization = bool(use_trivialization)
+		self.stop_gradient = resolve_stop_gradient(stop_gradient, default=False)
+		self.total_dim = self.nesting_list[-1]
+
+		self.t_layers = nn.ModuleList([
+			make_orthogonal_linear_layer(
+				dim,
+				mode=self.mode,
+				orthogonal_map=self.orthogonal_map,
+				use_trivialization=self.use_trivialization,
+			)
+			for dim in self.nesting_list[1:]
+		])
+
+	def get_block_widths(self):
+		return list(self.block_widths)
+
+	def get_t_dims(self):
+		return list(self.nesting_list[1:])
+
+	def forward(self, x, return_details=False):
+		if x.dim() != 2:
+			raise ValueError(f"OrthogonalTransitionLayer expects [B, D] input, got shape {tuple(x.shape)}")
+		if x.shape[1] != self.total_dim:
+			raise ValueError(f"Expected feature dimension {self.total_dim}, got {x.shape[1]}")
+
+		blocks = list(torch.split(x, self.block_widths, dim=1))
+		prefixes = [x[:, :self.nesting_list[0]]]
+		t_outputs = []
+
+		for t_layer, dim in zip(self.t_layers, self.nesting_list[1:]):
+			raw_prefix = x[:, :dim]
+			prefix = t_layer(maybe_stop_gradient(raw_prefix, self.stop_gradient))
+			t_outputs.append(prefix)
+			prefixes.append(prefix)
+
+		if return_details:
+			return prefixes, blocks, t_outputs
+		return prefixes
+
+	def prefix_gram_error(self, x):
+		prefixes = self(x)
+		errors = []
+		for dim, prefix in zip(self.nesting_list, prefixes):
+			raw_gram = x[:, :dim] @ x[:, :dim].t()
+			transformed_gram = prefix @ prefix.t()
+			errors.append((raw_gram - transformed_gram).abs().max())
+		return torch.stack(errors).max()
+
+	def extra_repr(self):
+		return (
+			f"nesting_list={self.nesting_list}, mode={self.mode}, "
+			f"orthogonal_map={self.orthogonal_map}, "
+			f"use_trivialization={self.use_trivialization}, "
+			f"stop_gradient={self.stop_gradient}"
+		)
+
+
+class TOrthogonalMRLHead(nn.Module):
+	def __init__(self, nesting_list, num_classes, mode="orthogonal",
+	             orthogonal_map="matrix_exp", use_trivialization=True,
+	             stop_gradient=False):
+		super().__init__()
+		self.transition_layer = OrthogonalTransitionLayer(
+			nesting_list,
+			mode=mode,
+			orthogonal_map=orthogonal_map,
+			use_trivialization=use_trivialization,
+			stop_gradient=stop_gradient,
+		)
+		self.nesting_list = list(self.transition_layer.nesting_list)
+		self.num_classes = int(num_classes)
+		self.mode = self.transition_layer.mode
+		self.orthogonal_map = self.transition_layer.orthogonal_map
+		self.use_trivialization = self.transition_layer.use_trivialization
+		self.stop_gradient = self.transition_layer.stop_gradient
+
+		self.classifiers = nn.ModuleList([
+			nn.Linear(dim, self.num_classes)
+			for dim in self.nesting_list
+		])
+
+		self.last_z = None
+		self.last_blocks = None
+		self.last_prefixes = None
+		self.last_t_outputs = None
+		self.last_input = None
+		self.capture_input_for_gradient_conflict = False
+
+	@property
+	def block_widths(self):
+		return self.transition_layer.block_widths
+
+	@property
+	def t_layers(self):
+		return self.transition_layer.t_layers
+
+	@property
+	def prefix_orthogonal_layers(self):
+		return self.transition_layer.t_layers
+
+	def get_t_dims(self):
+		return self.transition_layer.get_t_dims()
+
+	def forward(self, x):
+		if x.dim() != 2:
+			raise ValueError(f"TOrthogonalMRLHead expects [B, D] input, got shape {tuple(x.shape)}")
+		if x.shape[1] != self.nesting_list[-1]:
+			raise ValueError(f"Expected feature dimension {self.nesting_list[-1]}, got {x.shape[1]}")
+
+		self.last_input = x if self.capture_input_for_gradient_conflict else None
+		prefixes, blocks, t_outputs = self.transition_layer(x, return_details=True)
+		self.last_blocks = blocks
+		self.last_prefixes = prefixes
+		self.last_t_outputs = t_outputs
+		self.last_z = prefixes[-1]
+
+		return tuple(
+			classifier(prefix)
+			for classifier, prefix in zip(self.classifiers, prefixes)
+		)
+
+	def prefix_gram_error(self, x):
+		return self.transition_layer.prefix_gram_error(x)
+
+	def block_norms(self):
+		if self.last_blocks is None:
+			raise RuntimeError("block_norms() requires a previous forward pass")
+		return torch.stack([block.norm(p=2, dim=1).mean() for block in self.last_blocks])
+
+
 class MRL_Linear_Layer(nn.Module):
 	def __init__(self, nesting_list: List, num_classes=1000, efficient=False, **kwargs):
 		super(MRL_Linear_Layer, self).__init__()
