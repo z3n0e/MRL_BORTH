@@ -780,7 +780,7 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 
 
 class CascadeStopGradientMRLHead(nn.Module):
-	def __init__(self, nesting_list, num_classes, stop_gradient=True):
+	def __init__(self, nesting_list, num_classes, stop_gradient=False):
 		super().__init__()
 		self.nesting_list = [int(dim) for dim in nesting_list]
 		self.num_classes = int(num_classes)

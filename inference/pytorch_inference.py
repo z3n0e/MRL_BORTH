@@ -126,7 +126,7 @@ parser.add_argument('--bor_use_trivialization', type=int, default=1, help='Use d
 parser.add_argument('--bor_stop_gradient', type=int, choices=[-1, 0, 1], default=0, help='Stop gradients before BOR orthogonal maps? 0 off, 1 on, -1 class default')
 parser.add_argument('--bor_residual_orthogonal', type=int, default=0, help='Use gated residual orthogonal adapter for recursive BOR prefixes')
 parser.add_argument('--bor_residual_alpha_init', type=float, default=-3.0, help='Initial logit for gated residual BOR alpha')
-parser.add_argument('--cascade_stop_gradient', type=int, choices=[-1, 0, 1], default=-1, help='Stop gradients between cascade prefixes? 0 off, 1 on, -1 class default')
+parser.add_argument('--cascade_stop_gradient', type=int, choices=[-1, 0, 1], default=0, help='Stop gradients between cascade prefixes? 0 off, 1 on, -1 class default')
 parser.add_argument('--recursive_link_mrl', action='store_true', help='Use RecursiveLink-MRL residual-block links')
 parser.add_argument('--recursive_link_hidden_ratio', type=float, default=0.5, help='RecursiveLink hidden width ratio relative to previous prefix')
 parser.add_argument('--recursive_link_dropout', type=float, default=0.0, help='RecursiveLink MLP dropout probability')
