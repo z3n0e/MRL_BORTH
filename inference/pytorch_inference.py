@@ -127,6 +127,11 @@ parser.add_argument('--bor_stop_gradient', type=int, choices=[-1, 0, 1], default
 parser.add_argument('--bor_residual_orthogonal', type=int, default=0, help='Use gated residual orthogonal adapter for recursive BOR prefixes')
 parser.add_argument('--bor_residual_alpha_init', type=float, default=-3.0, help='Initial logit for gated residual BOR alpha')
 parser.add_argument('--cascade_stop_gradient', type=int, choices=[-1, 0, 1], default=-1, help='Stop gradients between cascade prefixes? 0 off, 1 on, -1 class default')
+parser.add_argument('--recursive_link_mrl', action='store_true', help='Use RecursiveLink-MRL residual-block links')
+parser.add_argument('--recursive_link_hidden_ratio', type=float, default=0.5, help='RecursiveLink hidden width ratio relative to previous prefix')
+parser.add_argument('--recursive_link_dropout', type=float, default=0.0, help='RecursiveLink MLP dropout probability')
+parser.add_argument('--recursive_link_alpha_init', type=float, default=-4.0, help='Initial RecursiveLink alpha logit')
+parser.add_argument('--recursive_link_stop_gradient', type=int, default=0, help='Detach previous prefix only inside RecursiveLink branch')
 # dataset/eval args
 parser.add_argument('--tta', action='store_true', help='Test Time Augmentation Flag')
 parser.add_argument('--dataset', type=str, default='V1', help='Benchmarks: V1/V2/A/Sketch/R/CIFAR100')
@@ -150,9 +155,10 @@ custom_mrl_variants = [
 	args.bor_mrl,
 	args.bor_block_mrl,
 	args.cascade_stop_gradient_mrl,
+	args.recursive_link_mrl,
 ]
 if sum(custom_mrl_variants) > 1:
-	raise ValueError("Choose only one custom MRL method: --t_orthogonal_mrl, --bor_mrl, --bor_block_mrl, or --cascade_stop_gradient_mrl.")
+	raise ValueError("Choose only one custom MRL method: --t_orthogonal_mrl, --bor_mrl, --bor_block_mrl, --cascade_stop_gradient_mrl, or --recursive_link_mrl.")
 if any(custom_mrl_variants) and args.mrl:
 	raise ValueError("Custom MRL variants are their own MRL methods; do not combine them with --mrl.")
 if any(custom_mrl_variants) and args.efficient:
@@ -189,6 +195,15 @@ elif args.cascade_stop_gradient_mrl:
 		num_classes=num_classes,
 		stop_gradient=resolve_stop_gradient_override(args.cascade_stop_gradient),
 	)
+elif args.recursive_link_mrl:
+	model.fc = RecursiveLinkMRLHead(
+		NESTING_LIST,
+		num_classes=num_classes,
+		recursive_link_hidden_ratio=args.recursive_link_hidden_ratio,
+		recursive_link_dropout=args.recursive_link_dropout,
+		recursive_link_alpha_init=args.recursive_link_alpha_init,
+		recursive_link_stop_gradient=bool(args.recursive_link_stop_gradient),
+	)
 elif args.bor_block_mrl:
 	model.fc = IndependentBlockOrthogonalMRLHead(
 		NESTING_LIST,
@@ -213,7 +228,7 @@ apply_blurpool(model)
 model.load_state_dict(get_ckpt(args.path)) # Accept DataParallel/legacy module-prefixed checkpoints.
 model = model.cuda()
 model.eval()
-is_nested_model = args.mrl or args.t_orthogonal_mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl
+is_nested_model = args.mrl or args.t_orthogonal_mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl or args.recursive_link_mrl
 
 normalize = transforms.Normalize(mean=dataset_config['mean'], std=dataset_config['std'])
 test_transform = transforms.Compose([
@@ -290,6 +305,11 @@ if not args.retrieval:
 		'bor_mrl': bool(args.bor_mrl),
 		'bor_block_mrl': bool(args.bor_block_mrl),
 		'cascade_stop_gradient_mrl': bool(args.cascade_stop_gradient_mrl),
+		'recursive_link_mrl': bool(args.recursive_link_mrl),
+		'recursive_link_hidden_ratio': float(args.recursive_link_hidden_ratio),
+		'recursive_link_dropout': float(args.recursive_link_dropout),
+		'recursive_link_alpha_init': float(args.recursive_link_alpha_init),
+		'recursive_link_stop_gradient': bool(args.recursive_link_stop_gradient),
 		'bor_mode': args.bor_mode,
 		'bor_orthogonal_map': args.bor_orthogonal_map,
 		'bor_use_trivialization': bool(args.bor_use_trivialization),
@@ -312,7 +332,7 @@ if not args.retrieval:
 
 	# saving torch tensor for model analysis... 
 	if args.save_logits or args.save_softmax or args.save_predictions:
-		save_string = f"mrl={args.mrl}_t_orthogonal_mrl={args.t_orthogonal_mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_cascade_stop_gradient_mrl={args.cascade_stop_gradient_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
+		save_string = f"mrl={args.mrl}_t_orthogonal_mrl={args.t_orthogonal_mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_cascade_stop_gradient_mrl={args.cascade_stop_gradient_mrl}_recursive_link_mrl={args.recursive_link_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
 		if args.save_logits:
 			torch.save(logits, save_string+"_logits.pth")
 		if args.save_predictions:

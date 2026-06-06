@@ -59,6 +59,9 @@ RUN_BOR_MRL=${RUN_BOR_MRL:-1}
 RUN_BOR_MRL_RESIDUAL=${RUN_BOR_MRL_RESIDUAL:-1}
 RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-1}
 RUN_CASCADE_STOP_GRADIENT_MRL=${RUN_CASCADE_STOP_GRADIENT_MRL:-1}
+RUN_RECURSIVE_LINK_MRL=${RUN_RECURSIVE_LINK_MRL:-0}
+RUN_MRL_PCD=${RUN_MRL_PCD:-0}
+RUN_RECURSIVE_LINK_MRL_PCD=${RUN_RECURSIVE_LINK_MRL_PCD:-0}
 RUN_BOR_MRL_FROZEN=${RUN_BOR_MRL_FROZEN:-1}
 RUN_BOR_MRL_CAYLEY=${RUN_BOR_MRL_CAYLEY:-1}
 RUN_BOR_MRL_HOUSEHOLDER=${RUN_BOR_MRL_HOUSEHOLDER:-1}
@@ -71,6 +74,12 @@ BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
 BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-1}
 BOR_RESIDUAL_ALPHA_INIT=${BOR_RESIDUAL_ALPHA_INIT:--3.0}
 CASCADE_STOP_GRADIENT=${CASCADE_STOP_GRADIENT:-1}
+RECURSIVE_LINK_HIDDEN_RATIO=${RECURSIVE_LINK_HIDDEN_RATIO:-0.5}
+RECURSIVE_LINK_DROPOUT=${RECURSIVE_LINK_DROPOUT:-0.0}
+RECURSIVE_LINK_ALPHA_INIT=${RECURSIVE_LINK_ALPHA_INIT:--4.0}
+RECURSIVE_LINK_STOP_GRADIENT=${RECURSIVE_LINK_STOP_GRADIENT:-0}
+PROCRUSTES_CASCADE_WEIGHT=${PROCRUSTES_CASCADE_WEIGHT:-0.05}
+PROCRUSTES_CASCADE_MAX_SVD_DIM=${PROCRUSTES_CASCADE_MAX_SVD_DIM:-1024}
 
 TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
 EVAL_DIR="$EXPERIMENT_DIR/eval"
@@ -91,6 +100,9 @@ echo "MRL conflict mode: $MRL_CONFLICT_MODE"
 echo "MRL conflict alpha: $MRL_CONFLICT_ALPHA"
 echo "MRL conflict eps: $MRL_CONFLICT_EPS"
 echo "T orthogonal map: $T_ORTHOGONAL_MAP"
+echo "RecursiveLink hidden ratio: $RECURSIVE_LINK_HIDDEN_RATIO"
+echo "RecursiveLink alpha init: $RECURSIVE_LINK_ALPHA_INIT"
+echo "PCD weight: $PROCRUSTES_CASCADE_WEIGHT"
 
 MRL_TRAINING_ARGS=(
     --training.mrl_loss_mode="$MRL_LOSS_MODE"
@@ -104,6 +116,27 @@ MRL_CONFLICT_TRAINING_ARGS=(
     --training.mrl_conflict_mode="$MRL_CONFLICT_MODE"
     --training.mrl_conflict_alpha="$MRL_CONFLICT_ALPHA"
     --training.mrl_conflict_eps="$MRL_CONFLICT_EPS"
+)
+
+RECURSIVE_LINK_TRAINING_ARGS=(
+    --model.recursive_link_hidden_ratio="$RECURSIVE_LINK_HIDDEN_RATIO"
+    --model.recursive_link_dropout="$RECURSIVE_LINK_DROPOUT"
+    --model.recursive_link_alpha_init="$RECURSIVE_LINK_ALPHA_INIT"
+    --model.recursive_link_stop_gradient="$RECURSIVE_LINK_STOP_GRADIENT"
+)
+
+RECURSIVE_LINK_EVAL_ARGS=(
+    --recursive_link_mrl
+    --recursive_link_hidden_ratio "$RECURSIVE_LINK_HIDDEN_RATIO"
+    --recursive_link_dropout "$RECURSIVE_LINK_DROPOUT"
+    --recursive_link_alpha_init "$RECURSIVE_LINK_ALPHA_INIT"
+    --recursive_link_stop_gradient "$RECURSIVE_LINK_STOP_GRADIENT"
+)
+
+PCD_TRAINING_ARGS=(
+    --training.procrustes_cascade_distill=1
+    --training.procrustes_cascade_weight="$PROCRUSTES_CASCADE_WEIGHT"
+    --training.procrustes_cascade_max_svd_dim="$PROCRUSTES_CASCADE_MAX_SVD_DIM"
 )
 
 write_manifest() {
@@ -135,6 +168,9 @@ write_manifest() {
         echo "run_bor_mrl_residual=$RUN_BOR_MRL_RESIDUAL"
         echo "run_bor_block_mrl=$RUN_BOR_BLOCK_MRL"
         echo "run_cascade_stop_gradient_mrl=$RUN_CASCADE_STOP_GRADIENT_MRL"
+        echo "run_recursive_link_mrl=$RUN_RECURSIVE_LINK_MRL"
+        echo "run_mrl_pcd=$RUN_MRL_PCD"
+        echo "run_recursive_link_mrl_pcd=$RUN_RECURSIVE_LINK_MRL_PCD"
         echo "run_bor_mrl_frozen=$RUN_BOR_MRL_FROZEN"
         echo "run_bor_mrl_cayley=$RUN_BOR_MRL_CAYLEY"
         echo "run_bor_mrl_householder=$RUN_BOR_MRL_HOUSEHOLDER"
@@ -144,6 +180,12 @@ write_manifest() {
         echo "bor_stop_gradient=$BOR_STOP_GRADIENT"
         echo "bor_residual_alpha_init=$BOR_RESIDUAL_ALPHA_INIT"
         echo "cascade_stop_gradient=$CASCADE_STOP_GRADIENT"
+        echo "recursive_link_hidden_ratio=$RECURSIVE_LINK_HIDDEN_RATIO"
+        echo "recursive_link_dropout=$RECURSIVE_LINK_DROPOUT"
+        echo "recursive_link_alpha_init=$RECURSIVE_LINK_ALPHA_INIT"
+        echo "recursive_link_stop_gradient=$RECURSIVE_LINK_STOP_GRADIENT"
+        echo "procrustes_cascade_weight=$PROCRUSTES_CASCADE_WEIGHT"
+        echo "procrustes_cascade_max_svd_dim=$PROCRUSTES_CASCADE_MAX_SVD_DIM"
     } > "$EXPERIMENT_DIR/manifest.txt"
 }
 
@@ -226,6 +268,34 @@ if [[ "$RUN_MRL" == "1" ]]; then
         "${MRL_CONFLICT_TRAINING_ARGS[@]}" \
         --model.mrl=1
     eval_run mrl --mrl
+fi
+
+if [[ "$RUN_MRL_PCD" == "1" ]]; then
+    train_run mrl_pcd \
+        "${MRL_TRAINING_ARGS[@]}" \
+        "${MRL_CONFLICT_TRAINING_ARGS[@]}" \
+        "${PCD_TRAINING_ARGS[@]}" \
+        --model.mrl=1
+    eval_run mrl_pcd --mrl
+fi
+
+if [[ "$RUN_RECURSIVE_LINK_MRL" == "1" ]]; then
+    train_run recursive_link_mrl \
+        "${MRL_TRAINING_ARGS[@]}" \
+        --model.recursive_link_mrl=1 \
+        "${RECURSIVE_LINK_TRAINING_ARGS[@]}"
+    eval_run recursive_link_mrl \
+        "${RECURSIVE_LINK_EVAL_ARGS[@]}"
+fi
+
+if [[ "$RUN_RECURSIVE_LINK_MRL_PCD" == "1" ]]; then
+    train_run recursive_link_mrl_pcd \
+        "${MRL_TRAINING_ARGS[@]}" \
+        "${PCD_TRAINING_ARGS[@]}" \
+        --model.recursive_link_mrl=1 \
+        "${RECURSIVE_LINK_TRAINING_ARGS[@]}"
+    eval_run recursive_link_mrl_pcd \
+        "${RECURSIVE_LINK_EVAL_ARGS[@]}"
 fi
 
 if [[ "$RUN_MRLE" == "1" ]]; then

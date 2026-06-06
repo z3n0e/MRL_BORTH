@@ -13,12 +13,14 @@ from MRL import (
     Matryoshka_CE_Loss,
     MRL_Linear_Layer,
     OrthogonalTransitionLayer,
+    RecursiveLinkMRLHead,
     TOrthogonalMRLHead,
     block_cascade_conflict_gating,
     block_widths_from_nesting_list,
     mrl_block_cascade_filtered_feature_gradient,
     mrl_gradient_conflict_stats,
     mrl_sampling_probabilities,
+    procrustes_cascade_distillation_loss,
 )
 from retrieval.metrics import (
     compute_retrieval_metrics_at_k,
@@ -382,6 +384,57 @@ def test_cascade_stop_gradient_mrl_head_output_shapes_and_prefixes():
 		assert torch.equal(prefix, x[:, :dim])
 	for logits in output:
 		assert logits.shape == (5, 10)
+
+
+def test_recursive_link_preserves_exact_prefixes():
+	nesting_list = [4, 8, 16]
+	x = torch.randn(3, 16)
+	head = RecursiveLinkMRLHead(nesting_list, num_classes=5)
+
+	logits = head(x)
+
+	assert len(logits) == 3
+	for output in logits:
+		assert output.shape == (3, 5)
+	assert torch.equal(head.last_prefixes[1][:, :4], head.last_prefixes[0])
+	assert torch.equal(head.last_prefixes[2][:, :8], head.last_prefixes[1])
+
+
+def test_recursive_link_approximates_standard_mrl_with_tiny_alpha():
+	nesting_list = [4, 8, 16]
+	x = torch.randn(3, 16)
+	head = RecursiveLinkMRLHead(
+		nesting_list,
+		num_classes=5,
+		recursive_link_alpha_init=-20.0,
+	)
+
+	head(x)
+
+	for dim, prefix in zip(nesting_list, head.last_prefixes):
+		assert torch.allclose(prefix, x[:, :dim], atol=1e-6, rtol=1e-6)
+
+
+def test_procrustes_cascade_distillation_loss_returns_finite_scalar():
+	x = torch.randn(3, 16)
+	prefixes = [x[:, :4], x[:, :8], x[:, :16]]
+
+	loss = procrustes_cascade_distillation_loss(prefixes)
+
+	assert loss.shape == torch.Size([])
+	assert torch.isfinite(loss)
+	assert loss.item() >= 0.0
+
+
+def test_procrustes_cascade_distillation_loss_skips_large_pairs():
+	x = torch.randn(3, 16)
+	prefixes = [x[:, :4], x[:, :8], x[:, :16]]
+
+	loss = procrustes_cascade_distillation_loss(prefixes, max_svd_dim=4)
+
+	assert loss.shape == torch.Size([])
+	assert torch.isfinite(loss)
+	assert loss.item() >= 0.0
 
 
 def test_orthogonal_transition_layer_builds_t_prefixes():

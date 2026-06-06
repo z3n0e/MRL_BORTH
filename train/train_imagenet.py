@@ -52,6 +52,11 @@ Section('model', 'model details').params(
     bor_mrl=Param(int, 'Use recursive-prefix Block-Orthogonal Residual MRL? (1/0)', default=0),
     bor_block_mrl=Param(int, 'Use independent-block Block-Orthogonal Residual MRL? (1/0)', default=0),
     cascade_stop_gradient_mrl=Param(int, 'Use recursive-prefix stop-gradient MRL without rotations? (1/0)', default=0),
+    recursive_link_mrl=Param(int, 'Use RecursiveLink-MRL residual-block links? (1/0)', default=0),
+    recursive_link_hidden_ratio=Param(float, 'RecursiveLink hidden width ratio relative to previous prefix', default=0.5),
+    recursive_link_dropout=Param(float, 'RecursiveLink MLP dropout probability', default=0.0),
+    recursive_link_alpha_init=Param(float, 'Initial RecursiveLink alpha logit', default=-4.0),
+    recursive_link_stop_gradient=Param(int, 'Detach previous prefix only inside RecursiveLink branch? (1/0)', default=0),
     bor_mode=Param(And(str, OneOf(['orthogonal', 'frozen'])), 'BOR block transform mode', default='orthogonal'),
     bor_orthogonal_map=Param(And(str, OneOf(['matrix_exp', 'cayley', 'householder'])), 'BOR orthogonal parametrization map', default='matrix_exp'),
     bor_use_trivialization=Param(int, 'Use dynamic trivialization for BOR orthogonal maps? (1/0)', default=1),
@@ -115,7 +120,13 @@ Section('training', 'training hyper param stuff').params(
     mrl_conflict_gating=Param(int, 'Enable MRL conflict-gated feature gradients? (1/0)', default=0),
     mrl_conflict_mode=Param(And(str, OneOf(['none', 'block_cascade'])), 'MRL conflict-gating mode', default='none'),
     mrl_conflict_alpha=Param(float, 'MRL conflict projection strength', default=0.5),
-    mrl_conflict_eps=Param(float, 'MRL conflict projection epsilon', default=1e-8)
+    mrl_conflict_eps=Param(float, 'MRL conflict projection epsilon', default=1e-8),
+    procrustes_cascade_distill=Param(int, 'Enable Procrustes Cascade Distillation? (1/0)', default=0),
+    procrustes_cascade_weight=Param(float, 'Weight for Procrustes Cascade Distillation loss', default=0.0),
+    procrustes_cascade_normalize=Param(int, 'Row-normalize prefixes inside PCD? (1/0)', default=1),
+    procrustes_cascade_center=Param(int, 'Batch-center prefixes inside PCD? (1/0)', default=1),
+    procrustes_cascade_detach_teacher=Param(int, 'Detach larger-prefix teacher inside PCD? (1/0)', default=1),
+    procrustes_cascade_max_svd_dim=Param(int, 'Maximum adjacent prefix dimension for exact PCD SVD', default=1024)
 )
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
@@ -198,6 +209,7 @@ class ImageNetTrainer:
     @param('model.bor_mrl')
     @param('model.bor_block_mrl')
     @param('model.cascade_stop_gradient_mrl')
+    @param('model.recursive_link_mrl')
     @param('model.nesting_start')
     @param('model.fixed_feature')
     @param('data.dataset')
@@ -205,7 +217,7 @@ class ImageNetTrainer:
     @param('training.deterministic')
     def __init__(self, efficient, mrl, t_orthogonal_mrl,
                  bor_mrl, bor_block_mrl,
-                 cascade_stop_gradient_mrl,
+                 cascade_stop_gradient_mrl, recursive_link_mrl,
                  nesting_start, fixed_feature,
                  dataset, seed, deterministic):
         self.all_params = get_current_config(); 
@@ -219,17 +231,20 @@ class ImageNetTrainer:
         self.bor_mrl = bool(bor_mrl)
         self.bor_block_mrl = bool(bor_block_mrl)
         self.cascade_stop_gradient_mrl = bool(cascade_stop_gradient_mrl)
+        self.recursive_link_mrl = bool(recursive_link_mrl)
         exclusive_mrl_variants = [
             self.t_orthogonal_mrl,
             self.bor_mrl,
             self.bor_block_mrl,
             self.cascade_stop_gradient_mrl,
+            self.recursive_link_mrl,
         ]
         if sum(exclusive_mrl_variants) > 1:
             raise ValueError(
                 "Choose only one custom MRL method: --model.t_orthogonal_mrl=1, "
                 "--model.bor_mrl=1, --model.bor_block_mrl=1, "
-                "or --model.cascade_stop_gradient_mrl=1."
+                "--model.cascade_stop_gradient_mrl=1, or "
+                "--model.recursive_link_mrl=1."
             )
         if any(exclusive_mrl_variants) and mrl:
             raise ValueError("Custom MRL variants are their own MRL methods; do not combine them with --model.mrl=1.")
@@ -474,6 +489,9 @@ class ImageNetTrainer:
     def base_model(self):
         return self.model.module if hasattr(self.model, 'module') else self.model
 
+    def get_fc_module(self):
+        return getattr(self.base_model(), 'fc', None)
+
     def load_model_state(self, path):
         state_dict = ch.load(path, map_location=self.device)
         if any(key.startswith('module.') for key in state_dict.keys()):
@@ -484,8 +502,7 @@ class ImageNetTrainer:
         self.base_model().load_state_dict(state_dict)
 
     def bor_residual_alpha_log_dict(self):
-        model = self.base_model()
-        fc = getattr(model, 'fc', None)
+        fc = self.get_fc_module()
         if not getattr(fc, 'bor_residual_orthogonal', False):
             return {}
 
@@ -501,6 +518,29 @@ class ImageNetTrainer:
         if alpha_values:
             log_dict['bor_residual_alpha_mean'] = float(np.mean(alpha_values))
         return log_dict
+
+    def recursive_link_alpha_log_dict(self):
+        fc = self.get_fc_module()
+        if not isinstance(fc, RecursiveLinkMRLHead):
+            return {}
+
+        alpha_values = fc.alpha_values().detach().float().cpu().tolist()
+        log_dict = {
+            f'recursive_link_alpha_{dim}': float(alpha)
+            for dim, alpha in zip(fc.nesting_list[1:], alpha_values)
+        }
+        if alpha_values:
+            log_dict['recursive_link_alpha_mean'] = float(np.mean(alpha_values))
+        return log_dict
+
+    def pcd_pair_count(self, prefixes, max_svd_dim):
+        if prefixes is None:
+            return 0
+        count = 0
+        for small, large in zip(prefixes, prefixes[1:]):
+            if max(small.shape[1], large.shape[1]) <= int(max_svd_dim):
+                count += 1
+        return count
 
     def sampled_prefix_active(self):
         return self.nesting and getattr(self.loss, 'mrl_loss_mode', None) == 'sampled_prefix'
@@ -651,6 +691,7 @@ class ImageNetTrainer:
             'current_lr': self.optimizer.param_groups[0]['lr'], 'val_time': val_time
         }
         d.update(self.bor_residual_alpha_log_dict())
+        d.update(self.recursive_link_alpha_log_dict())
         d.update(self.sampled_prefix_counts_log_dict())
         for k in stats.keys():
             if k=='loss':
@@ -674,11 +715,19 @@ class ImageNetTrainer:
     @param('model.bor_residual_orthogonal')
     @param('model.bor_residual_alpha_init')
     @param('model.cascade_stop_gradient')
+    @param('model.recursive_link_hidden_ratio')
+    @param('model.recursive_link_dropout')
+    @param('model.recursive_link_alpha_init')
+    @param('model.recursive_link_stop_gradient')
     def create_model_and_scaler(self, arch, pretrained, use_blurpool,
                                 t_orthogonal_map,
                                 bor_mode, bor_orthogonal_map, bor_use_trivialization,
                                 bor_stop_gradient, bor_residual_orthogonal,
-                                bor_residual_alpha_init, cascade_stop_gradient):
+                                bor_residual_alpha_init, cascade_stop_gradient,
+                                recursive_link_hidden_ratio,
+                                recursive_link_dropout,
+                                recursive_link_alpha_init,
+                                recursive_link_stop_gradient):
         '''
         Nesting Start is just the log_2 {smallest dim} unit. In our work we used powers of two, however this part can be changed easily. 
         If we do not want to use MRL, we just keep both the efficient and mrl flags to 0
@@ -718,6 +767,16 @@ class ImageNetTrainer:
                 self.nesting_list,
                 num_classes=self.num_classes,
                 stop_gradient=resolve_stop_gradient_override(cascade_stop_gradient),
+            )
+        elif self.recursive_link_mrl:
+            print("Creating classification layer of type :\t RecursiveLink-MRL")
+            model.fc = RecursiveLinkMRLHead(
+                self.nesting_list,
+                num_classes=self.num_classes,
+                recursive_link_hidden_ratio=recursive_link_hidden_ratio,
+                recursive_link_dropout=recursive_link_dropout,
+                recursive_link_alpha_init=recursive_link_alpha_init,
+                recursive_link_stop_gradient=bool(recursive_link_stop_gradient),
             )
         elif self.bor_block_mrl:
             print("Creating classification layer of type :\t BOR-MRL (independent residual blocks)")
@@ -763,9 +822,19 @@ class ImageNetTrainer:
     @param('training.mrl_conflict_mode')
     @param('training.mrl_conflict_alpha')
     @param('training.mrl_conflict_eps')
+    @param('training.procrustes_cascade_distill')
+    @param('training.procrustes_cascade_weight')
+    @param('training.procrustes_cascade_normalize')
+    @param('training.procrustes_cascade_center')
+    @param('training.procrustes_cascade_detach_teacher')
+    @param('training.procrustes_cascade_max_svd_dim')
     def train_loop(self, epoch, log_level, sampled_prefix_log_interval,
                    mrl_gradient_conflict_interval, mrl_conflict_gating,
-                   mrl_conflict_mode, mrl_conflict_alpha, mrl_conflict_eps):
+                   mrl_conflict_mode, mrl_conflict_alpha, mrl_conflict_eps,
+                   procrustes_cascade_distill, procrustes_cascade_weight,
+                   procrustes_cascade_normalize, procrustes_cascade_center,
+                   procrustes_cascade_detach_teacher,
+                   procrustes_cascade_max_svd_dim):
         model = self.model
         model.train()
         losses = []
@@ -774,6 +843,9 @@ class ImageNetTrainer:
             mrl_conflict_mode,
         )
         conflict_gating_active = mrl_conflict_mode == 'block_cascade'
+        pcd_active = bool(procrustes_cascade_distill)
+        if pcd_active and conflict_gating_active:
+            raise ValueError("PCD is not currently supported with mrl_conflict_gating.")
 
         lr_start, lr_end = self.get_lr(epoch), self.get_lr(epoch + 1)
         iters = len(self.train_loader)
@@ -791,6 +863,7 @@ class ImageNetTrainer:
 
             self.optimizer.zero_grad(set_to_none=True)
             gradient_conflict_log = {}
+            pcd_step_log = {}
             should_measure_conflict = (
                 not conflict_gating_active and
                 self.nesting and
@@ -807,6 +880,23 @@ class ImageNetTrainer:
                     loss_train = self.loss.weighted_all_loss(prefix_losses)
                 else:
                     loss_train = self.loss(output, target)
+                if pcd_active:
+                    fc = self.get_fc_module()
+                    prefixes = getattr(fc, 'last_prefixes', None)
+                    if prefixes is not None:
+                        pcd_loss = procrustes_cascade_distillation_loss(
+                            prefixes,
+                            normalize=bool(procrustes_cascade_normalize),
+                            center=bool(procrustes_cascade_center),
+                            detach_teacher=bool(procrustes_cascade_detach_teacher),
+                            max_svd_dim=procrustes_cascade_max_svd_dim,
+                        )
+                        loss_train = loss_train + float(procrustes_cascade_weight) * pcd_loss
+                        pcd_step_log = {
+                            'pcd_loss': float(pcd_loss.detach().float().cpu().item()),
+                            'pcd_weight': float(procrustes_cascade_weight),
+                            'pcd_pairs_used': self.pcd_pair_count(prefixes, procrustes_cascade_max_svd_dim),
+                        }
                 if should_measure_conflict:
                     gradient_conflict_log = self.mrl_gradient_conflict_log_dict(output, target)
 
@@ -840,6 +930,16 @@ class ImageNetTrainer:
                     **gradient_conflict_log
                 })
 
+            if pcd_step_log and sampled_prefix_log_interval > 0:
+                if ix == 0 or (ix + 1) % sampled_prefix_log_interval == 0:
+                    pcd_log = dict(pcd_step_log)
+                    pcd_log.update(self.recursive_link_alpha_log_dict())
+                    self.log({
+                        'epoch': epoch,
+                        'iter': ix,
+                        **pcd_log
+                    })
+
             should_log_conflict_gating = (
                 conflict_gating_log and
                 (
@@ -870,6 +970,9 @@ class ImageNetTrainer:
                 if log_level > 1:
                     names += ['loss']
                     values += [f'{loss_train.item():.3f}']
+                    if pcd_step_log:
+                        names += ['pcd']
+                        values += [f'{pcd_step_log["pcd_loss"]:.3f}']
 
                 msg = ', '.join(f'{n}={v}' for n, v in zip(names, values))
                 iterator.set_description(msg)

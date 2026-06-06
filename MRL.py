@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import List
 
 try:
@@ -263,6 +264,70 @@ def mrl_block_cascade_filtered_feature_gradient(
 	for weight, grad in zip(weights, filtered_grads):
 		combined = combined + weight.to(device=grad.device, dtype=grad.dtype) * grad
 	return combined, stats
+
+
+def _process_procrustes_features(x, center=True, normalize=True, eps=1e-6):
+	x = x.float()
+	if center:
+		x = x - x.mean(dim=0, keepdim=True)
+	if normalize:
+		x = F.normalize(x, p=2, dim=1, eps=eps)
+	return x
+
+
+def procrustes_cascade_distillation_loss(
+	prefixes,
+	normalize=True,
+	center=True,
+	detach_teacher=True,
+	eps=1e-6,
+	max_svd_dim=1024,
+):
+	prefixes = list(prefixes)
+	if len(prefixes) == 0:
+		raise ValueError("prefixes must contain at least one tensor")
+	if len(prefixes) == 1:
+		return prefixes[0].new_zeros(())
+
+	losses = []
+	for small, large in zip(prefixes, prefixes[1:]):
+		if small.dim() != 2 or large.dim() != 2:
+			raise ValueError("PCD prefixes must be 2D tensors with shape [B, d]")
+		if small.shape[0] != large.shape[0]:
+			raise ValueError("PCD adjacent prefixes must have the same batch size")
+		if large.shape[1] < small.shape[1]:
+			raise ValueError("PCD requires nondecreasing adjacent prefix dimensions")
+		if max_svd_dim is not None and max(small.shape[1], large.shape[1]) > int(max_svd_dim):
+			continue
+
+		large_teacher = large.detach() if detach_teacher else large
+		processed_small = _process_procrustes_features(
+			small,
+			center=center,
+			normalize=normalize,
+			eps=eps,
+		)
+		processed_large = _process_procrustes_features(
+			large_teacher,
+			center=center,
+			normalize=normalize,
+			eps=eps,
+		)
+
+		with torch.no_grad():
+			a = processed_large.detach()
+			b = processed_small.detach()
+			m = a.t() @ b
+			u, _, vh = torch.linalg.svd(m, full_matrices=False)
+			q = u @ vh
+
+		target = processed_large @ q.to(device=processed_large.device, dtype=processed_large.dtype)
+		losses.append(F.mse_loss(processed_small, target))
+
+	if not losses:
+		return prefixes[0].new_zeros(())
+
+	return torch.stack(losses).mean()
 
 
 class Matryoshka_CE_Loss(nn.Module):
@@ -771,6 +836,114 @@ class CascadeStopGradientMRLHead(nn.Module):
 		return torch.stack([block.norm(p=2, dim=1).mean() for block in self.last_blocks])
 
 
+class RecursiveLinkBlock(nn.Module):
+	def __init__(self, in_dim, out_dim, hidden_ratio=0.5, dropout=0.0):
+		super().__init__()
+		self.in_dim = int(in_dim)
+		self.out_dim = int(out_dim)
+		self.hidden_ratio = float(hidden_ratio)
+		self.dropout = float(dropout)
+		hidden_dim = max(self.out_dim, int(self.in_dim * self.hidden_ratio))
+
+		self.net = nn.Sequential(
+			nn.LayerNorm(self.in_dim),
+			nn.Linear(self.in_dim, hidden_dim),
+			nn.GELU(),
+			nn.Dropout(self.dropout),
+			nn.Linear(hidden_dim, self.out_dim),
+		)
+
+	def forward(self, x):
+		return self.net(x)
+
+
+class RecursiveLinkMRLHead(nn.Module):
+	def __init__(
+		self,
+		nesting_list,
+		num_classes,
+		recursive_link_hidden_ratio=0.5,
+		recursive_link_dropout=0.0,
+		recursive_link_alpha_init=-4.0,
+		recursive_link_stop_gradient=False,
+	):
+		super().__init__()
+		self.nesting_list = [int(dim) for dim in nesting_list]
+		self.num_classes = int(num_classes)
+		self.block_widths = block_widths_from_nesting_list(self.nesting_list)
+		self.recursive_link_hidden_ratio = float(recursive_link_hidden_ratio)
+		self.recursive_link_dropout = float(recursive_link_dropout)
+		self.recursive_link_alpha_init = float(recursive_link_alpha_init)
+		self.recursive_link_stop_gradient = bool(recursive_link_stop_gradient)
+
+		self.classifiers = nn.ModuleList([
+			nn.Linear(dim, self.num_classes)
+			for dim in self.nesting_list
+		])
+		self.links = nn.ModuleList([
+			RecursiveLinkBlock(
+				in_dim=prev_dim,
+				out_dim=block_width,
+				hidden_ratio=self.recursive_link_hidden_ratio,
+				dropout=self.recursive_link_dropout,
+			)
+			for prev_dim, block_width in zip(self.nesting_list[:-1], self.block_widths[1:])
+		])
+		self.alpha_logits = nn.Parameter(
+			torch.full((len(self.nesting_list) - 1,), self.recursive_link_alpha_init)
+		)
+
+		self.last_blocks = None
+		self.last_prefixes = None
+		self.last_z = None
+		self.last_input = None
+		self.capture_input_for_gradient_conflict = False
+
+	def forward(self, x):
+		if x.dim() != 2:
+			raise ValueError(f"RecursiveLinkMRLHead expects [B, D] input, got shape {tuple(x.shape)}")
+		if x.shape[1] != self.nesting_list[-1]:
+			raise ValueError(f"Expected feature dimension {self.nesting_list[-1]}, got {x.shape[1]}")
+
+		self.last_input = x if self.capture_input_for_gradient_conflict else None
+		blocks = list(torch.split(x, self.block_widths, dim=1))
+		self.last_blocks = blocks
+
+		prefix = blocks[0]
+		prefixes = [prefix]
+		logits = [self.classifiers[0](prefix)]
+
+		for i, block in enumerate(blocks[1:]):
+			link_input = maybe_stop_gradient(prefix, self.recursive_link_stop_gradient)
+			correction = self.links[i](link_input)
+			alpha = torch.sigmoid(self.alpha_logits[i]).to(dtype=x.dtype, device=x.device)
+			new_block = block + alpha * correction
+			prefix = torch.cat([prefix, new_block], dim=1)
+			prefixes.append(prefix)
+			logits.append(self.classifiers[i + 1](prefix))
+
+		self.last_prefixes = prefixes
+		self.last_z = prefixes[-1]
+		return tuple(logits)
+
+	def prefix_gram_error(self, x):
+		self(x)
+		errors = []
+		for dim, prefix in zip(self.nesting_list, self.last_prefixes):
+			raw_gram = x[:, :dim] @ x[:, :dim].t()
+			transformed_gram = prefix @ prefix.t()
+			errors.append((raw_gram - transformed_gram).abs().max())
+		return torch.stack(errors).max()
+
+	def block_norms(self):
+		if self.last_blocks is None:
+			raise RuntimeError("block_norms() requires a previous forward pass")
+		return torch.stack([block.norm(p=2, dim=1).mean() for block in self.last_blocks])
+
+	def alpha_values(self):
+		return torch.sigmoid(self.alpha_logits)
+
+
 class OrthogonalTransitionLayer(nn.Module):
 	def __init__(self, nesting_list, mode="orthogonal",
 	             orthogonal_map="matrix_exp", use_trivialization=True,
@@ -929,6 +1102,7 @@ class MRL_Linear_Layer(nn.Module):
 		self.num_classes = num_classes # Number of classes for classification
 		self.efficient = efficient
 		self.last_input = None
+		self.last_prefixes = None
 		self.capture_input_for_gradient_conflict = False
 		if self.efficient:
 			setattr(self, f"nesting_classifier_{0}", nn.Linear(nesting_list[-1], self.num_classes, **kwargs))		
@@ -946,15 +1120,16 @@ class MRL_Linear_Layer(nn.Module):
 
 	def forward(self, x):
 		self.last_input = x if self.capture_input_for_gradient_conflict else None
+		self.last_prefixes = [x[:, :num_feat] for num_feat in self.nesting_list]
 		nesting_logits = ()
-		for i, num_feat in enumerate(self.nesting_list):
+		for i, (num_feat, prefix) in enumerate(zip(self.nesting_list, self.last_prefixes)):
 			if self.efficient:
 				if self.nesting_classifier_0.bias is None:
-					nesting_logits += (torch.matmul(x[:, :num_feat], (self.nesting_classifier_0.weight[:, :num_feat]).t()), )
+					nesting_logits += (torch.matmul(prefix, (self.nesting_classifier_0.weight[:, :num_feat]).t()), )
 				else:
-					nesting_logits += (torch.matmul(x[:, :num_feat], (self.nesting_classifier_0.weight[:, :num_feat]).t()) + self.nesting_classifier_0.bias, )
+					nesting_logits += (torch.matmul(prefix, (self.nesting_classifier_0.weight[:, :num_feat]).t()) + self.nesting_classifier_0.bias, )
 			else:
-				nesting_logits +=  (getattr(self, f"nesting_classifier_{i}")(x[:, :num_feat]),)
+				nesting_logits +=  (getattr(self, f"nesting_classifier_{i}")(prefix),)
 
 		return nesting_logits
 
