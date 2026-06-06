@@ -107,6 +107,10 @@ def save_metrics(metrics, path):
 		json.dump(metrics, handle, indent=2)
 
 def retrieval_head_processing_name(args):
+	if args.suffix_balanced_mrl:
+		return "Suffix-Balanced MRL"
+	if args.bidirectional_mrl:
+		return "Bidirectional MRL"
 	if args.recursive_link_mrl:
 		return "RecursiveLink-MRL"
 	if args.t_orthogonal_mrl:
@@ -116,6 +120,25 @@ def retrieval_head_processing_name(args):
 	if args.bor_block_mrl:
 		return "BOR block MRL"
 	return None
+
+def method_name(args):
+	if args.suffix_balanced_mrl:
+		return "suffix_balanced_mrl"
+	if args.bidirectional_mrl:
+		return "bidirectional_mrl"
+	if args.t_orthogonal_mrl:
+		return "t_orthogonal_mrl"
+	if args.bor_mrl:
+		return "bor_mrl"
+	if args.bor_block_mrl:
+		return "bor_block_mrl"
+	if args.cascade_stop_gradient_mrl:
+		return "cascade_stop_gradient_mrl"
+	if args.recursive_link_mrl:
+		return "recursive_link_mrl"
+	if args.mrl:
+		return "mrl_e" if args.efficient else "mrl"
+	return "fixed_feature"
 
 def log_retrieval_feature_source(args):
 	print("Retrieval arrays use raw avgpool encoder features.")
@@ -135,6 +158,9 @@ parser.add_argument('--rep_size', type=int, default=2048, help='Rep. size for fi
 parser.add_argument('--path', type=str, required=True, help='Path to .pt model checkpoint')
 parser.add_argument('--old_ckpt', action='store_true', help='To use our trained checkpoints')
 parser.add_argument('--workers', type=int, default=12, help='num workers for dataloader')
+parser.add_argument('--bidirectional_mrl', action='store_true', help='Use Bidirectional MRL')
+parser.add_argument('--suffix_balanced_mrl', action='store_true', help='Use Suffix-Balanced MRL')
+parser.add_argument('--suffix_balanced_include_full', type=int, default=0, help='Add a full-dimension suffix head for Suffix-Balanced MRL')
 parser.add_argument('--t_orthogonal_mrl', action='store_true', help='Use T-orthogonal transition MRL')
 parser.add_argument('--t_orthogonal_map', type=str, choices=['matrix_exp', 'householder', 'household'], default='matrix_exp', help='T orthogonal parametrization map')
 parser.add_argument('--bor_mrl', action='store_true', help='Use recursive-prefix Block-Orthogonal Residual MRL')
@@ -171,6 +197,8 @@ parser.add_argument('--retrieval_array_path', default='', help='path to save dat
 
 args = parser.parse_args()
 custom_mrl_variants = [
+	args.bidirectional_mrl,
+	args.suffix_balanced_mrl,
 	args.t_orthogonal_mrl,
 	args.bor_mrl,
 	args.bor_block_mrl,
@@ -178,7 +206,7 @@ custom_mrl_variants = [
 	args.recursive_link_mrl,
 ]
 if sum(custom_mrl_variants) > 1:
-	raise ValueError("Choose only one custom MRL method: --t_orthogonal_mrl, --bor_mrl, --bor_block_mrl, --cascade_stop_gradient_mrl, or --recursive_link_mrl.")
+	raise ValueError("Choose only one custom MRL method: --bidirectional_mrl, --suffix_balanced_mrl, --t_orthogonal_mrl, --bor_mrl, --bor_block_mrl, --cascade_stop_gradient_mrl, or --recursive_link_mrl.")
 if any(custom_mrl_variants) and args.mrl:
 	raise ValueError("Custom MRL variants are their own MRL methods; do not combine them with --mrl.")
 if any(custom_mrl_variants) and args.efficient:
@@ -189,7 +217,18 @@ num_classes = dataset_config['num_classes']
 data_root = Path(args.data_root)
 
 model = resnet50(False)
-if args.t_orthogonal_mrl:
+if args.suffix_balanced_mrl:
+	model.fc = SuffixBalancedMRLHead(
+		NESTING_LIST,
+		num_classes=num_classes,
+		include_full_suffix=bool(args.suffix_balanced_include_full),
+	)
+elif args.bidirectional_mrl:
+	model.fc = BidirectionalMRLHead(
+		NESTING_LIST,
+		num_classes=num_classes,
+	)
+elif args.t_orthogonal_mrl:
 	model.fc = TOrthogonalMRLHead(
 		NESTING_LIST,
 		num_classes=num_classes,
@@ -248,7 +287,7 @@ apply_blurpool(model)
 model.load_state_dict(get_ckpt(args.path)) # Accept DataParallel/legacy module-prefixed checkpoints.
 model = model.cuda()
 model.eval()
-is_nested_model = args.mrl or args.t_orthogonal_mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl or args.recursive_link_mrl
+is_nested_model = args.mrl or args.bidirectional_mrl or args.suffix_balanced_mrl or args.t_orthogonal_mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl or args.recursive_link_mrl
 
 normalize = transforms.Normalize(mean=dataset_config['mean'], std=dataset_config['std'])
 test_transform = transforms.Compose([
@@ -319,7 +358,11 @@ if not args.retrieval:
 	metrics = {
 		'dataset': args.dataset,
 		'checkpoint': args.path,
+		'method': method_name(args),
 		'mrl': bool(args.mrl),
+		'bidirectional_mrl': bool(args.bidirectional_mrl),
+		'suffix_balanced_mrl': bool(args.suffix_balanced_mrl),
+		'suffix_balanced_include_full': bool(args.suffix_balanced_include_full),
 		't_orthogonal_mrl': bool(args.t_orthogonal_mrl),
 		't_orthogonal_map': resolve_t_orthogonal_map(args.t_orthogonal_map),
 		'bor_mrl': bool(args.bor_mrl),
@@ -352,7 +395,7 @@ if not args.retrieval:
 
 	# saving torch tensor for model analysis... 
 	if args.save_logits or args.save_softmax or args.save_predictions:
-		save_string = f"mrl={args.mrl}_t_orthogonal_mrl={args.t_orthogonal_mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_cascade_stop_gradient_mrl={args.cascade_stop_gradient_mrl}_recursive_link_mrl={args.recursive_link_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
+		save_string = f"mrl={args.mrl}_bidirectional_mrl={args.bidirectional_mrl}_suffix_balanced_mrl={args.suffix_balanced_mrl}_t_orthogonal_mrl={args.t_orthogonal_mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_cascade_stop_gradient_mrl={args.cascade_stop_gradient_mrl}_recursive_link_mrl={args.recursive_link_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
 		if args.save_logits:
 			torch.save(logits, save_string+"_logits.pth")
 		if args.save_predictions:

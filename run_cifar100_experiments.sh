@@ -38,6 +38,8 @@ MRL_CONFLICT_EPS=${MRL_CONFLICT_EPS:-1e-8}
 
 # Method toggles.
 RUN_MRL=${RUN_MRL:-1}
+RUN_BIDIRECTIONAL_MRL=${RUN_BIDIRECTIONAL_MRL:-0}
+RUN_SUFFIX_BALANCED_MRL=${RUN_SUFFIX_BALANCED_MRL:-0}
 RUN_MRLE=${RUN_MRLE:-0}
 RUN_FULL_FEATURE=${RUN_FULL_FEATURE:-0}
 RUN_FIXED_FEATURE=${RUN_FIXED_FEATURE:-0}
@@ -45,7 +47,7 @@ RUN_T_ORTHOGONAL_MRL=${RUN_T_ORTHOGONAL_MRL:-0}
 RUN_BOR_MRL=${RUN_BOR_MRL:-0}
 RUN_BOR_MRL_RESIDUAL=${RUN_BOR_MRL_RESIDUAL:-0}
 RUN_BOR_BLOCK_MRL=${RUN_BOR_BLOCK_MRL:-0}
-RUN_CASCADE_STOP_GRADIENT_MRL=${RUN_CASCADE_STOP_GRADIENT_MRL:-1}
+RUN_CASCADE_STOP_GRADIENT_MRL=${RUN_CASCADE_STOP_GRADIENT_MRL:-0}
 RUN_RECURSIVE_LINK_MRL=${RUN_RECURSIVE_LINK_MRL:-0}
 RUN_MRL_PCD=${RUN_MRL_PCD:-0}
 RUN_RECURSIVE_LINK_MRL_PCD=${RUN_RECURSIVE_LINK_MRL_PCD:-0}
@@ -68,6 +70,7 @@ RECURSIVE_LINK_ALPHA_INIT=${RECURSIVE_LINK_ALPHA_INIT:--4.0}
 RECURSIVE_LINK_STOP_GRADIENT=${RECURSIVE_LINK_STOP_GRADIENT:-0}
 PROCRUSTES_CASCADE_WEIGHT=${PROCRUSTES_CASCADE_WEIGHT:-0.05}
 PROCRUSTES_CASCADE_MAX_SVD_DIM=${PROCRUSTES_CASCADE_MAX_SVD_DIM:-1024}
+SUFFIX_BALANCED_INCLUDE_FULL=${SUFFIX_BALANCED_INCLUDE_FULL:-0}
 
 TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
 EVAL_DIR="$EXPERIMENT_DIR/eval"
@@ -87,6 +90,9 @@ echo "MRL conflict gating: $MRL_CONFLICT_GATING"
 echo "MRL conflict mode: $MRL_CONFLICT_MODE"
 echo "MRL conflict alpha: $MRL_CONFLICT_ALPHA"
 echo "MRL conflict eps: $MRL_CONFLICT_EPS"
+echo "Run Bidirectional MRL: $RUN_BIDIRECTIONAL_MRL"
+echo "Run Suffix-Balanced MRL: $RUN_SUFFIX_BALANCED_MRL"
+echo "Suffix-Balanced include full: $SUFFIX_BALANCED_INCLUDE_FULL"
 echo "T orthogonal map: $T_ORTHOGONAL_MAP"
 echo "RecursiveLink hidden ratio: $RECURSIVE_LINK_HIDDEN_RATIO"
 echo "RecursiveLink alpha init: $RECURSIVE_LINK_ALPHA_INIT"
@@ -150,6 +156,8 @@ write_manifest() {
         echo "mrl_conflict_eps=$MRL_CONFLICT_EPS"
         echo "fixed_feature_dims=$FIXED_FEATURE_DIMS"
         echo "run_mrl=$RUN_MRL"
+        echo "run_bidirectional_mrl=$RUN_BIDIRECTIONAL_MRL"
+        echo "run_suffix_balanced_mrl=$RUN_SUFFIX_BALANCED_MRL"
         echo "run_mrle=$RUN_MRLE"
         echo "run_full_feature=$RUN_FULL_FEATURE"
         echo "run_fixed_feature=$RUN_FIXED_FEATURE"
@@ -177,6 +185,7 @@ write_manifest() {
         echo "recursive_link_stop_gradient=$RECURSIVE_LINK_STOP_GRADIENT"
         echo "procrustes_cascade_weight=$PROCRUSTES_CASCADE_WEIGHT"
         echo "procrustes_cascade_max_svd_dim=$PROCRUSTES_CASCADE_MAX_SVD_DIM"
+        echo "suffix_balanced_include_full=$SUFFIX_BALANCED_INCLUDE_FULL"
     } > "$EXPERIMENT_DIR/manifest.txt"
 }
 
@@ -273,6 +282,23 @@ if [[ "$RUN_MRL" == "1" ]]; then
         "${MRL_CONFLICT_TRAINING_ARGS[@]}" \
         --model.mrl=1
     eval_run mrl --mrl
+fi
+
+if [[ "$RUN_BIDIRECTIONAL_MRL" == "1" ]]; then
+    train_run bidirectional_mrl \
+        "${MRL_TRAINING_ARGS[@]}" \
+        --model.bidirectional_mrl=1
+    eval_run bidirectional_mrl --bidirectional_mrl
+fi
+
+if [[ "$RUN_SUFFIX_BALANCED_MRL" == "1" ]]; then
+    train_run suffix_balanced_mrl \
+        "${MRL_TRAINING_ARGS[@]}" \
+        --model.suffix_balanced_mrl=1 \
+        --model.suffix_balanced_include_full="$SUFFIX_BALANCED_INCLUDE_FULL"
+    eval_run suffix_balanced_mrl \
+        --suffix_balanced_mrl \
+        --suffix_balanced_include_full "$SUFFIX_BALANCED_INCLUDE_FULL"
 fi
 
 if [[ "$RUN_MRL_PCD" == "1" ]]; then

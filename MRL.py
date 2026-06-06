@@ -1109,6 +1109,56 @@ class TOrthogonalMRLHead(nn.Module):
 		return torch.stack([block.norm(p=2, dim=1).mean() for block in self.last_blocks])
 
 
+class BidirectionalMRLHead(nn.Module):
+	def __init__(self, nesting_list, num_classes):
+		super().__init__()
+		self.nesting_list = [int(dim) for dim in nesting_list]
+		self.num_classes = int(num_classes)
+		if len(self.nesting_list) == 0:
+			raise ValueError("nesting_list must contain at least one positive dimension")
+		if any(dim <= 0 for dim in self.nesting_list):
+			raise ValueError("nesting_list dimensions must all be positive")
+		for prev_dim, dim in zip(self.nesting_list, self.nesting_list[1:]):
+			if dim <= prev_dim:
+				raise ValueError("nesting_list must be strictly increasing")
+
+		self.full_dim = self.nesting_list[-1]
+		for dim in self.nesting_list[:-1]:
+			if dim % 2 != 0:
+				raise ValueError("All non-full bidirectional nesting dimensions must be even")
+
+		self.classifiers = nn.ModuleList([
+			nn.Linear(dim, self.num_classes)
+			for dim in self.nesting_list
+		])
+		self.last_prefixes = None
+		self.last_bidirectional_prefixes = None
+		self.last_input = None
+		self.capture_input_for_gradient_conflict = False
+
+	def forward(self, x):
+		if x.dim() != 2:
+			raise ValueError(f"BidirectionalMRLHead expects [B, D] input, got shape {tuple(x.shape)}")
+		if x.shape[1] != self.full_dim:
+			raise ValueError(f"Expected feature dimension {self.full_dim}, got {x.shape[1]}")
+
+		self.last_input = x if self.capture_input_for_gradient_conflict else None
+		prefixes = []
+		for dim in self.nesting_list:
+			if dim == self.full_dim:
+				prefixes.append(x)
+			else:
+				half = dim // 2
+				prefixes.append(torch.cat([x[:, :half], x[:, -half:]], dim=1))
+
+		self.last_prefixes = prefixes
+		self.last_bidirectional_prefixes = prefixes
+		return tuple(
+			classifier(prefix)
+			for classifier, prefix in zip(self.classifiers, prefixes)
+		)
+
+
 class MRL_Linear_Layer(nn.Module):
 	def __init__(self, nesting_list: List, num_classes=1000, efficient=False, **kwargs):
 		super(MRL_Linear_Layer, self).__init__()
@@ -1146,6 +1196,77 @@ class MRL_Linear_Layer(nn.Module):
 				nesting_logits +=  (getattr(self, f"nesting_classifier_{i}")(prefix),)
 
 		return nesting_logits
+
+
+class SuffixBalancedMRLHead(nn.Module):
+	def __init__(self, nesting_list, num_classes, include_full_suffix=False):
+		super().__init__()
+		self.nesting_list = [int(dim) for dim in nesting_list]
+		self.num_classes = int(num_classes)
+		self.include_full_suffix = bool(include_full_suffix)
+		if len(self.nesting_list) == 0:
+			raise ValueError("nesting_list must contain at least one positive dimension")
+		if any(dim <= 0 for dim in self.nesting_list):
+			raise ValueError("nesting_list dimensions must all be positive")
+		for prev_dim, dim in zip(self.nesting_list, self.nesting_list[1:]):
+			if dim <= prev_dim:
+				raise ValueError("nesting_list must be strictly increasing")
+
+		self.prefix_head = MRL_Linear_Layer(
+			self.nesting_list,
+			num_classes=self.num_classes,
+			efficient=False,
+		)
+		self.suffix_nesting_list = (
+			list(self.nesting_list)
+			if self.include_full_suffix
+			else list(self.nesting_list[:-1])
+		)
+		self.suffix_classifiers = nn.ModuleList([
+			nn.Linear(dim, self.num_classes)
+			for dim in self.suffix_nesting_list
+		])
+		self.last_prefix_logits = None
+		self.last_suffix_logits = None
+		self.last_prefixes = None
+		self.last_suffixes = None
+		self.last_input = None
+		self.capture_input_for_gradient_conflict = False
+
+	@property
+	def num_suffix_heads(self):
+		return len(self.suffix_classifiers)
+
+	def forward(self, x):
+		if x.dim() != 2:
+			raise ValueError(f"SuffixBalancedMRLHead expects [B, D] input, got shape {tuple(x.shape)}")
+		if x.shape[1] != self.nesting_list[-1]:
+			raise ValueError(f"Expected feature dimension {self.nesting_list[-1]}, got {x.shape[1]}")
+
+		self.last_input = x if self.capture_input_for_gradient_conflict else None
+		prefix_logits = self.prefix_head(x)
+		self.last_prefix_logits = prefix_logits
+		self.last_prefixes = self.prefix_head.last_prefixes
+		self.last_suffixes = [x[:, -dim:] for dim in self.suffix_nesting_list]
+		if self.training:
+			self.last_suffix_logits = tuple(
+				classifier(suffix)
+				for classifier, suffix in zip(self.suffix_classifiers, self.last_suffixes)
+			)
+		else:
+			self.last_suffix_logits = None
+		return prefix_logits
+
+	def auxiliary_loss(self, targets):
+		if self.num_suffix_heads == 0:
+			return torch.zeros((), device=targets.device, dtype=torch.float32)
+		if self.last_suffix_logits is None:
+			raise RuntimeError("auxiliary_loss() requires a previous forward pass")
+
+		return torch.stack([
+			F.cross_entropy(logits, targets)
+			for logits in self.last_suffix_logits
+		]).mean()
 
 
 class FixedFeatureLayer(nn.Linear):

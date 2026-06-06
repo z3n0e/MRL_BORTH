@@ -4,6 +4,7 @@ import pytest
 import numpy as np
 
 from MRL import (
+    BidirectionalMRLHead,
     BlockOrthogonalLayer,
     BlockOrthogonalResidualMRLHead,
     CascadeStopGradientMRLHead,
@@ -14,6 +15,7 @@ from MRL import (
     MRL_Linear_Layer,
     OrthogonalTransitionLayer,
     RecursiveLinkMRLHead,
+    SuffixBalancedMRLHead,
     TOrthogonalMRLHead,
     block_cascade_conflict_gating,
     block_widths_from_nesting_list,
@@ -225,6 +227,98 @@ def test_custom_num_classes_layers():
     fixed_output = fixed_layer(torch.randn(batch_size, nesting_list[-1]))
 
     assert fixed_output.shape == (batch_size, num_classes)
+
+
+def test_bidirectional_mrl_head_prefixes_and_output_shapes():
+    batch_size = 3
+    num_classes = 10
+    nesting_list = [8, 16, 32, 64]
+    x = torch.randn(batch_size, 64)
+    head = BidirectionalMRLHead(nesting_list, num_classes=num_classes)
+
+    logits = head(x)
+
+    assert isinstance(logits, tuple)
+    assert len(logits) == 4
+    for output in logits:
+        assert output.shape == (batch_size, num_classes)
+    assert torch.equal(
+        head.last_bidirectional_prefixes[0],
+        torch.cat([x[:, :4], x[:, -4:]], dim=1),
+    )
+    assert torch.equal(
+        head.last_bidirectional_prefixes[1],
+        torch.cat([x[:, :8], x[:, -8:]], dim=1),
+    )
+    assert torch.equal(head.last_bidirectional_prefixes[-1], x)
+
+
+def test_suffix_balanced_mrl_head_prefix_logits_and_prefixes():
+    x = torch.randn(4, 64)
+    head = SuffixBalancedMRLHead([8, 16, 32, 64], num_classes=10)
+
+    logits = head(x)
+
+    assert len(logits) == 4
+    assert logits[0].shape == (4, 10)
+    assert logits[1].shape == (4, 10)
+    assert logits[2].shape == (4, 10)
+    assert logits[3].shape == (4, 10)
+    assert torch.equal(head.last_prefixes[0], x[:, :8])
+    assert torch.equal(head.last_prefixes[1], x[:, :16])
+    assert torch.equal(head.last_prefixes[2], x[:, :32])
+    assert torch.equal(head.last_prefixes[3], x[:, :64])
+
+
+def test_suffix_balanced_mrl_head_suffixes_exclude_full_by_default():
+    x = torch.randn(4, 64)
+    head = SuffixBalancedMRLHead([8, 16, 32, 64], num_classes=10)
+
+    head(x)
+
+    assert len(head.last_suffixes) == 3
+    assert torch.equal(head.last_suffixes[0], x[:, -8:])
+    assert torch.equal(head.last_suffixes[1], x[:, -16:])
+    assert torch.equal(head.last_suffixes[2], x[:, -32:])
+
+
+def test_suffix_balanced_mrl_auxiliary_loss_is_finite_scalar():
+    x = torch.randn(4, 64)
+    y = torch.randint(0, 10, (4,))
+    head = SuffixBalancedMRLHead([8, 16, 32, 64], num_classes=10)
+
+    head(x)
+    aux = head.auxiliary_loss(y)
+
+    assert aux.dim() == 0
+    assert torch.isfinite(aux)
+    assert aux.item() >= 0
+
+
+def test_suffix_balanced_mrl_include_full_suffix():
+    x = torch.randn(4, 64)
+    head = SuffixBalancedMRLHead(
+        nesting_list=[8, 16, 32, 64],
+        num_classes=10,
+        include_full_suffix=True,
+    )
+
+    head(x)
+
+    assert len(head.last_suffixes) == 4
+    assert torch.equal(head.last_suffixes[0], x[:, -8:])
+    assert torch.equal(head.last_suffixes[1], x[:, -16:])
+    assert torch.equal(head.last_suffixes[2], x[:, -32:])
+    assert torch.equal(head.last_suffixes[3], x[:, -64:])
+
+
+def test_suffix_balanced_mrl_has_no_suffix_weight_argument():
+    with pytest.raises(TypeError):
+        SuffixBalancedMRLHead(
+            nesting_list=[8, 16, 32, 64],
+            num_classes=10,
+            suffix_weight=0.25,
+        )
 
 
 def test_idempotency():

@@ -45,6 +45,9 @@ Section('model', 'model details').params(
     pretrained=Param(int, 'is pretrained? (1/0)', default=0),
     efficient=Param(int, "MRL-E?", default=0),
     mrl=Param(int, "MRL?", default=0),
+    bidirectional_mrl=Param(int, "Use Bidirectional MRL? (1/0)", default=0),
+    suffix_balanced_mrl=Param(int, "Use Suffix-Balanced MRL? (1/0)", default=0),
+    suffix_balanced_include_full=Param(int, "Add a full-dimension suffix head for Suffix-Balanced MRL? (1/0)", default=0),
     nesting_start=Param(int, '2**i will be starting dimension for nesting', default=3),
     fixed_feature=Param(int, 'In case we want to do the fixed feature training, by default it is 2048', default=2048),
     t_orthogonal_mrl=Param(int, 'Use T-orthogonal transition MRL? (1/0)', default=0),
@@ -205,6 +208,8 @@ class BlurPoolConv2d(ch.nn.Module):
 class ImageNetTrainer:
     @param('model.efficient')
     @param('model.mrl')
+    @param('model.bidirectional_mrl')
+    @param('model.suffix_balanced_mrl')
     @param('model.t_orthogonal_mrl')
     @param('model.bor_mrl')
     @param('model.bor_block_mrl')
@@ -215,7 +220,8 @@ class ImageNetTrainer:
     @param('data.dataset')
     @param('training.seed')
     @param('training.deterministic')
-    def __init__(self, efficient, mrl, t_orthogonal_mrl,
+    def __init__(self, efficient, mrl, bidirectional_mrl, suffix_balanced_mrl,
+                 t_orthogonal_mrl,
                  bor_mrl, bor_block_mrl,
                  cascade_stop_gradient_mrl, recursive_link_mrl,
                  nesting_start, fixed_feature,
@@ -227,12 +233,16 @@ class ImageNetTrainer:
         self.device = ch.device('cuda' if ch.cuda.is_available() else 'cpu')
         self.num_gpus = ch.cuda.device_count() if self.device.type == 'cuda' else 0
         self.efficient = efficient
+        self.bidirectional_mrl = bool(bidirectional_mrl)
+        self.suffix_balanced_mrl = bool(suffix_balanced_mrl)
         self.t_orthogonal_mrl = bool(t_orthogonal_mrl)
         self.bor_mrl = bool(bor_mrl)
         self.bor_block_mrl = bool(bor_block_mrl)
         self.cascade_stop_gradient_mrl = bool(cascade_stop_gradient_mrl)
         self.recursive_link_mrl = bool(recursive_link_mrl)
         exclusive_mrl_variants = [
+            self.bidirectional_mrl,
+            self.suffix_balanced_mrl,
             self.t_orthogonal_mrl,
             self.bor_mrl,
             self.bor_block_mrl,
@@ -241,7 +251,9 @@ class ImageNetTrainer:
         ]
         if sum(exclusive_mrl_variants) > 1:
             raise ValueError(
-                "Choose only one custom MRL method: --model.t_orthogonal_mrl=1, "
+                "Choose only one custom MRL method: --model.bidirectional_mrl=1, "
+                "--model.suffix_balanced_mrl=1, "
+                "--model.t_orthogonal_mrl=1, "
                 "--model.bor_mrl=1, --model.bor_block_mrl=1, "
                 "--model.cascade_stop_gradient_mrl=1, or "
                 "--model.recursive_link_mrl=1."
@@ -707,6 +719,7 @@ class ImageNetTrainer:
     @param('model.arch')
     @param('model.pretrained')
     @param('training.use_blurpool') # Later Arguments for nesting/fixed_feat
+    @param('model.suffix_balanced_include_full')
     @param('model.t_orthogonal_map')
     @param('model.bor_mode')
     @param('model.bor_orthogonal_map')
@@ -720,6 +733,7 @@ class ImageNetTrainer:
     @param('model.recursive_link_alpha_init')
     @param('model.recursive_link_stop_gradient')
     def create_model_and_scaler(self, arch, pretrained, use_blurpool,
+                                suffix_balanced_include_full,
                                 t_orthogonal_map,
                                 bor_mode, bor_orthogonal_map, bor_use_trivialization,
                                 bor_stop_gradient, bor_residual_orthogonal,
@@ -739,7 +753,20 @@ class ImageNetTrainer:
         scaler = GradScaler(enabled=self.device.type == 'cuda')
         model = getattr(models, arch)(pretrained=pretrained)
 
-        if self.t_orthogonal_mrl:
+        if self.suffix_balanced_mrl:
+            print("Creating classification layer of type :\t Suffix-Balanced MRL")
+            model.fc = SuffixBalancedMRLHead(
+                self.nesting_list,
+                num_classes=self.num_classes,
+                include_full_suffix=bool(suffix_balanced_include_full),
+            )
+        elif self.bidirectional_mrl:
+            print("Creating classification layer of type :\t Bidirectional MRL")
+            model.fc = BidirectionalMRLHead(
+                self.nesting_list,
+                num_classes=self.num_classes,
+            )
+        elif self.t_orthogonal_mrl:
             print("Creating classification layer of type :\t T-Orthogonal MRL")
             model.fc = TOrthogonalMRLHead(
                 self.nesting_list,
@@ -864,6 +891,7 @@ class ImageNetTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             gradient_conflict_log = {}
             pcd_step_log = {}
+            suffix_balanced_step_log = {}
             should_measure_conflict = (
                 not conflict_gating_active and
                 self.nesting and
@@ -880,8 +908,15 @@ class ImageNetTrainer:
                     loss_train = self.loss.weighted_all_loss(prefix_losses)
                 else:
                     loss_train = self.loss(output, target)
+                fc = self.get_fc_module()
+                if hasattr(fc, "auxiliary_loss"):
+                    suffix_loss = fc.auxiliary_loss(target)
+                    loss_train = loss_train + suffix_loss
+                    suffix_balanced_step_log = {
+                        'suffix_balanced_loss': float(suffix_loss.detach().float().cpu().item()),
+                        'suffix_balanced_num_heads': int(getattr(fc, 'num_suffix_heads', 0)),
+                    }
                 if pcd_active:
-                    fc = self.get_fc_module()
                     prefixes = getattr(fc, 'last_prefixes', None)
                     if prefixes is not None:
                         pcd_loss = procrustes_cascade_distillation_loss(
@@ -940,6 +975,14 @@ class ImageNetTrainer:
                         **pcd_log
                     })
 
+            if suffix_balanced_step_log and sampled_prefix_log_interval > 0:
+                if ix == 0 or (ix + 1) % sampled_prefix_log_interval == 0:
+                    self.log({
+                        'epoch': epoch,
+                        'iter': ix,
+                        **suffix_balanced_step_log
+                    })
+
             should_log_conflict_gating = (
                 conflict_gating_log and
                 (
@@ -973,6 +1016,9 @@ class ImageNetTrainer:
                     if pcd_step_log:
                         names += ['pcd']
                         values += [f'{pcd_step_log["pcd_loss"]:.3f}']
+                    if suffix_balanced_step_log:
+                        names += ['suffix']
+                        values += [f"{suffix_balanced_step_log['suffix_balanced_loss']:.3f}"]
 
                 msg = ', '.join(f'{n}={v}' for n, v in zip(names, values))
                 iterator.set_description(msg)
