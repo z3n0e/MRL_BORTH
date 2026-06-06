@@ -50,6 +50,10 @@ TRAINING_MRL_CONFLICT_ALPHA=${MRL_CONFLICT_ALPHA:-}
 TRAINING_MRL_CONFLICT_EPS=${MRL_CONFLICT_EPS:-}
 TRAINING_T_ORTHOGONAL_MAP=${T_ORTHOGONAL_MAP:-}
 TRAINING_BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-}
+TRAINING_RECURSIVE_LINK_HIDDEN_RATIO=${RECURSIVE_LINK_HIDDEN_RATIO:-}
+TRAINING_RECURSIVE_LINK_DROPOUT=${RECURSIVE_LINK_DROPOUT:-}
+TRAINING_RECURSIVE_LINK_ALPHA_INIT=${RECURSIVE_LINK_ALPHA_INIT:-}
+TRAINING_RECURSIVE_LINK_STOP_GRADIENT=${RECURSIVE_LINK_STOP_GRADIENT:-}
 
 if [[ -f "$MANIFEST" ]]; then
     while IFS='=' read -r key value; do
@@ -84,6 +88,18 @@ if [[ -f "$MANIFEST" ]]; then
             bor_orthogonal_map)
                 [[ -z "$TRAINING_BOR_ORTHOGONAL_MAP" ]] && TRAINING_BOR_ORTHOGONAL_MAP=$value
                 ;;
+            recursive_link_hidden_ratio)
+                [[ -z "$TRAINING_RECURSIVE_LINK_HIDDEN_RATIO" ]] && TRAINING_RECURSIVE_LINK_HIDDEN_RATIO=$value
+                ;;
+            recursive_link_dropout)
+                [[ -z "$TRAINING_RECURSIVE_LINK_DROPOUT" ]] && TRAINING_RECURSIVE_LINK_DROPOUT=$value
+                ;;
+            recursive_link_alpha_init)
+                [[ -z "$TRAINING_RECURSIVE_LINK_ALPHA_INIT" ]] && TRAINING_RECURSIVE_LINK_ALPHA_INIT=$value
+                ;;
+            recursive_link_stop_gradient)
+                [[ -z "$TRAINING_RECURSIVE_LINK_STOP_GRADIENT" ]] && TRAINING_RECURSIVE_LINK_STOP_GRADIENT=$value
+                ;;
         esac
     done < "$MANIFEST"
 fi
@@ -98,6 +114,10 @@ TRAINING_MRL_CONFLICT_ALPHA=${TRAINING_MRL_CONFLICT_ALPHA:-0.5}
 TRAINING_MRL_CONFLICT_EPS=${TRAINING_MRL_CONFLICT_EPS:-1e-8}
 TRAINING_T_ORTHOGONAL_MAP=${TRAINING_T_ORTHOGONAL_MAP:-matrix_exp}
 TRAINING_BOR_ORTHOGONAL_MAP=${TRAINING_BOR_ORTHOGONAL_MAP:-matrix_exp}
+TRAINING_RECURSIVE_LINK_HIDDEN_RATIO=${TRAINING_RECURSIVE_LINK_HIDDEN_RATIO:-0.5}
+TRAINING_RECURSIVE_LINK_DROPOUT=${TRAINING_RECURSIVE_LINK_DROPOUT:-0.0}
+TRAINING_RECURSIVE_LINK_ALPHA_INIT=${TRAINING_RECURSIVE_LINK_ALPHA_INIT:--4.0}
+TRAINING_RECURSIVE_LINK_STOP_GRADIENT=${TRAINING_RECURSIVE_LINK_STOP_GRADIENT:-0}
 
 PYTHON=${PYTHON:-python}
 RETRIEVAL_ROOT=${RETRIEVAL_ROOT:-"$RUN_DIR/retrieval"}
@@ -117,9 +137,13 @@ FORCE_ARRAYS=${FORCE_ARRAYS:-0}
 T_ORTHOGONAL_MAP=${T_ORTHOGONAL_MAP:-$TRAINING_T_ORTHOGONAL_MAP}
 BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-$TRAINING_BOR_ORTHOGONAL_MAP}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
-BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-1}
+BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-0}
 BOR_RESIDUAL_ALPHA_INIT=${BOR_RESIDUAL_ALPHA_INIT:--3.0}
 CASCADE_STOP_GRADIENT=${CASCADE_STOP_GRADIENT:-1}
+RECURSIVE_LINK_HIDDEN_RATIO=${RECURSIVE_LINK_HIDDEN_RATIO:-$TRAINING_RECURSIVE_LINK_HIDDEN_RATIO}
+RECURSIVE_LINK_DROPOUT=${RECURSIVE_LINK_DROPOUT:-$TRAINING_RECURSIVE_LINK_DROPOUT}
+RECURSIVE_LINK_ALPHA_INIT=${RECURSIVE_LINK_ALPHA_INIT:-$TRAINING_RECURSIVE_LINK_ALPHA_INIT}
+RECURSIVE_LINK_STOP_GRADIENT=${RECURSIVE_LINK_STOP_GRADIENT:-$TRAINING_RECURSIVE_LINK_STOP_GRADIENT}
 
 mkdir -p "$RETRIEVAL_ROOT" "$METRICS_DIR"
 
@@ -144,6 +168,10 @@ echo "BOR orthogonal map: $BOR_ORTHOGONAL_MAP"
 echo "BOR stop gradient: $BOR_STOP_GRADIENT"
 echo "BOR residual alpha init: $BOR_RESIDUAL_ALPHA_INIT"
 echo "Cascade stop gradient: $CASCADE_STOP_GRADIENT"
+echo "RecursiveLink hidden ratio: $RECURSIVE_LINK_HIDDEN_RATIO"
+echo "RecursiveLink dropout: $RECURSIVE_LINK_DROPOUT"
+echo "RecursiveLink alpha init: $RECURSIVE_LINK_ALPHA_INIT"
+echo "RecursiveLink stop gradient: $RECURSIVE_LINK_STOP_GRADIENT"
 echo
 
 run_method() {
@@ -263,6 +291,29 @@ run_method mrle \
     "$CHECKPOINT_DIR/mrle_final_weights.pt" \
     mrl_e 2048 "$NESTED_DIMS" mrl1_e1_ff2048 \
     --mrl --efficient
+
+run_method mrl_pcd \
+    "$CHECKPOINT_DIR/mrl_pcd_final_weights.pt" \
+    mrl_pcd 2048 "$NESTED_DIMS" mrl1_e0_ff2048 \
+    --mrl
+
+run_method recursive_link_mrl \
+    "$CHECKPOINT_DIR/recursive_link_mrl_final_weights.pt" \
+    recursive_link_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
+    --recursive_link_mrl \
+    --recursive_link_hidden_ratio "$RECURSIVE_LINK_HIDDEN_RATIO" \
+    --recursive_link_dropout "$RECURSIVE_LINK_DROPOUT" \
+    --recursive_link_alpha_init "$RECURSIVE_LINK_ALPHA_INIT" \
+    --recursive_link_stop_gradient "$RECURSIVE_LINK_STOP_GRADIENT"
+
+run_method recursive_link_mrl_pcd \
+    "$CHECKPOINT_DIR/recursive_link_mrl_pcd_final_weights.pt" \
+    recursive_link_mrl_pcd 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
+    --recursive_link_mrl \
+    --recursive_link_hidden_ratio "$RECURSIVE_LINK_HIDDEN_RATIO" \
+    --recursive_link_dropout "$RECURSIVE_LINK_DROPOUT" \
+    --recursive_link_alpha_init "$RECURSIVE_LINK_ALPHA_INIT" \
+    --recursive_link_stop_gradient "$RECURSIVE_LINK_STOP_GRADIENT"
 
 run_method t_orthogonal_mrl \
     "$CHECKPOINT_DIR/t_orthogonal_mrl_final_weights.pt" \

@@ -793,24 +793,8 @@ def test_bor_mrl_stop_gradient_defaults_to_disabled():
 	assert x.grad[:, 2:].abs().sum() > 0
 
 
-def test_cascade_stop_gradient_defaults_to_disabled():
+def test_cascade_stop_gradient_defaults_to_enabled():
 	head = CascadeStopGradientMRLHead([2, 4], num_classes=3)
-	with torch.no_grad():
-		head.classifiers[-1].weight.fill_(1.0)
-		head.classifiers[-1].bias.zero_()
-
-	x = torch.randn(5, 4, requires_grad=True)
-	loss = head(x)[-1].sum()
-	loss.backward()
-
-	assert not head.stop_gradient
-	assert x.grad is not None
-	assert x.grad[:, :2].abs().sum() > 0
-	assert x.grad[:, 2:].abs().sum() > 0
-
-
-def test_cascade_stop_gradient_can_be_enabled():
-	head = CascadeStopGradientMRLHead([2, 4], num_classes=3, stop_gradient=True)
 	with torch.no_grad():
 		head.classifiers[-1].weight.fill_(1.0)
 		head.classifiers[-1].bias.zero_()
@@ -822,6 +806,22 @@ def test_cascade_stop_gradient_can_be_enabled():
 	assert head.stop_gradient
 	assert x.grad is not None
 	assert torch.allclose(x.grad[:, :2], torch.zeros_like(x.grad[:, :2]))
+	assert x.grad[:, 2:].abs().sum() > 0
+
+
+def test_cascade_stop_gradient_can_be_disabled():
+	head = CascadeStopGradientMRLHead([2, 4], num_classes=3, stop_gradient=False)
+	with torch.no_grad():
+		head.classifiers[-1].weight.fill_(1.0)
+		head.classifiers[-1].bias.zero_()
+
+	x = torch.randn(5, 4, requires_grad=True)
+	loss = head(x)[-1].sum()
+	loss.backward()
+
+	assert not head.stop_gradient
+	assert x.grad is not None
+	assert x.grad[:, :2].abs().sum() > 0
 	assert x.grad[:, 2:].abs().sum() > 0
 
 

@@ -52,6 +52,7 @@ RUN_RECURSIVE_LINK_MRL_PCD=${RUN_RECURSIVE_LINK_MRL_PCD:-0}
 RUN_BOR_MRL_FROZEN=${RUN_BOR_MRL_FROZEN:-0}
 RUN_BOR_MRL_CAYLEY=${RUN_BOR_MRL_CAYLEY:-0}
 RUN_BOR_MRL_HOUSEHOLDER=${RUN_BOR_MRL_HOUSEHOLDER:-1}
+RUN_RETRIEVAL_METRICS=${RUN_RETRIEVAL_METRICS:-1}
 FIXED_FEATURE_DIMS=${FIXED_FEATURE_DIMS:-"8 16 32 64 128 256 512 1024"}
 
 # BOR-MRL knobs.
@@ -60,7 +61,7 @@ BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-matrix_exp}
 BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
 BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-0}
 BOR_RESIDUAL_ALPHA_INIT=${BOR_RESIDUAL_ALPHA_INIT:--3.0}
-CASCADE_STOP_GRADIENT=${CASCADE_STOP_GRADIENT:-0}
+CASCADE_STOP_GRADIENT=${CASCADE_STOP_GRADIENT:-1}
 RECURSIVE_LINK_HIDDEN_RATIO=${RECURSIVE_LINK_HIDDEN_RATIO:-0.5}
 RECURSIVE_LINK_DROPOUT=${RECURSIVE_LINK_DROPOUT:-0.0}
 RECURSIVE_LINK_ALPHA_INIT=${RECURSIVE_LINK_ALPHA_INIT:--4.0}
@@ -90,6 +91,7 @@ echo "T orthogonal map: $T_ORTHOGONAL_MAP"
 echo "RecursiveLink hidden ratio: $RECURSIVE_LINK_HIDDEN_RATIO"
 echo "RecursiveLink alpha init: $RECURSIVE_LINK_ALPHA_INIT"
 echo "PCD weight: $PROCRUSTES_CASCADE_WEIGHT"
+echo "Run retrieval metrics: $RUN_RETRIEVAL_METRICS"
 
 MRL_TRAINING_ARGS=(
     --training.mrl_loss_mode="$MRL_LOSS_MODE"
@@ -162,6 +164,7 @@ write_manifest() {
         echo "run_bor_mrl_frozen=$RUN_BOR_MRL_FROZEN"
         echo "run_bor_mrl_cayley=$RUN_BOR_MRL_CAYLEY"
         echo "run_bor_mrl_householder=$RUN_BOR_MRL_HOUSEHOLDER"
+        echo "run_retrieval_metrics=$RUN_RETRIEVAL_METRICS"
         echo "t_orthogonal_map=$T_ORTHOGONAL_MAP"
         echo "bor_orthogonal_map=$BOR_ORTHOGONAL_MAP"
         echo "bor_use_trivialization=$BOR_USE_TRIVIALIZATION"
@@ -245,6 +248,21 @@ eval_run() {
             --metrics_output "$metrics_output" \
             "$@"
     )
+}
+
+run_retrieval_metrics() {
+    if [[ "$RUN_RETRIEVAL_METRICS" != "1" ]]; then
+        echo "Skipping retrieval metrics because RUN_RETRIEVAL_METRICS=$RUN_RETRIEVAL_METRICS"
+        return
+    fi
+
+    echo "Computing retrieval metrics for this CIFAR-100 run..."
+    CIFAR100_DIR="$CIFAR100_DIR" \
+    PYTHON="$PYTHON" \
+    SEED="$SEED" \
+    DETERMINISTIC="$DETERMINISTIC" \
+    EVAL_WORKERS="$EVAL_WORKERS" \
+        "$ROOT_DIR/run_cifar100_retrieval_metrics.sh" "$EXPERIMENT_DIR"
 }
 
 write_manifest
@@ -427,7 +445,13 @@ if [[ "$RUN_FIXED_FEATURE" == "1" ]]; then
     done
 fi
 
+run_retrieval_metrics
+
 echo "Done."
 echo "Metrics JSON files are in: $EVAL_DIR"
 echo "Model checkpoints are in: $CHECKPOINT_DIR"
+if [[ "$RUN_RETRIEVAL_METRICS" == "1" ]]; then
+    echo "Retrieval metrics JSON files are in: $EXPERIMENT_DIR/retrieval_metrics"
+    echo "Retrieval CSV summary is in: $EXPERIMENT_DIR/cifar100_retrieval_summary.csv"
+fi
 echo "Open cifar100_results.ipynb and set EXPERIMENT_DIR to visualize this run."

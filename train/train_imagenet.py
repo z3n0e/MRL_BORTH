@@ -63,7 +63,7 @@ Section('model', 'model details').params(
     bor_stop_gradient=Param(And(int, OneOf([-1, 0, 1])), 'Stop gradients before BOR orthogonal maps? (0 off, 1 on, -1 class default)', default=0),
     bor_residual_orthogonal=Param(int, 'Use gated residual orthogonal adapter for recursive BOR prefixes? (1/0)', default=0),
     bor_residual_alpha_init=Param(float, 'Initial logit for gated residual BOR alpha', default=-3.0),
-    cascade_stop_gradient=Param(And(int, OneOf([-1, 0, 1])), 'Stop gradients between cascade prefixes? (0 off, 1 on, -1 class default)', default=0)
+    cascade_stop_gradient=Param(And(int, OneOf([-1, 0, 1])), 'Stop gradients between cascade prefixes? (0 off, 1 on, -1 class default)', default=-1)
 )
 
 Section('resolution', 'resolution scheduling').params(
