@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List
+from contextlib import nullcontext
 
 try:
 	from torch.nn.utils.parametrizations import orthogonal
@@ -275,6 +276,18 @@ def _process_procrustes_features(x, center=True, normalize=True, eps=1e-6):
 	return x
 
 
+def _disabled_autocast_context(device):
+	device_type = getattr(device, "type", str(device))
+	if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+		try:
+			return torch.amp.autocast(device_type=device_type, enabled=False)
+		except (TypeError, RuntimeError):
+			pass
+	if device_type == "cuda" and hasattr(torch.cuda, "amp"):
+		return torch.cuda.amp.autocast(enabled=False)
+	return nullcontext()
+
+
 def procrustes_cascade_distillation_loss(
 	prefixes,
 	normalize=True,
@@ -300,29 +313,30 @@ def procrustes_cascade_distillation_loss(
 		if max_svd_dim is not None and max(small.shape[1], large.shape[1]) > int(max_svd_dim):
 			continue
 
-		large_teacher = large.detach() if detach_teacher else large
-		processed_small = _process_procrustes_features(
-			small,
-			center=center,
-			normalize=normalize,
-			eps=eps,
-		)
-		processed_large = _process_procrustes_features(
-			large_teacher,
-			center=center,
-			normalize=normalize,
-			eps=eps,
-		)
+		with _disabled_autocast_context(small.device):
+			large_teacher = large.detach() if detach_teacher else large
+			processed_small = _process_procrustes_features(
+				small,
+				center=center,
+				normalize=normalize,
+				eps=eps,
+			)
+			processed_large = _process_procrustes_features(
+				large_teacher,
+				center=center,
+				normalize=normalize,
+				eps=eps,
+			)
 
-		with torch.no_grad():
-			a = processed_large.detach()
-			b = processed_small.detach()
-			m = a.t() @ b
-			u, _, vh = torch.linalg.svd(m, full_matrices=False)
-			q = u @ vh
+			with torch.no_grad():
+				a = processed_large.detach().float()
+				b = processed_small.detach().float()
+				m = (a.t() @ b).float()
+				u, _, vh = torch.linalg.svd(m, full_matrices=False)
+				q = u @ vh
 
-		target = processed_large @ q.to(device=processed_large.device, dtype=processed_large.dtype)
-		losses.append(F.mse_loss(processed_small, target))
+			target = processed_large @ q.to(device=processed_large.device, dtype=processed_large.dtype)
+			losses.append(F.mse_loss(processed_small, target))
 
 	if not losses:
 		return prefixes[0].new_zeros(())

@@ -426,6 +426,29 @@ def test_procrustes_cascade_distillation_loss_returns_finite_scalar():
 	assert loss.item() >= 0.0
 
 
+def test_procrustes_cascade_distillation_loss_uses_float32_svd_under_autocast(monkeypatch):
+	if not hasattr(torch, "autocast"):
+		pytest.skip("torch.autocast is not available")
+
+	seen_dtypes = []
+	original_svd = torch.linalg.svd
+
+	def wrapped_svd(input_tensor, *args, **kwargs):
+		seen_dtypes.append(input_tensor.dtype)
+		return original_svd(input_tensor, *args, **kwargs)
+
+	monkeypatch.setattr(torch.linalg, "svd", wrapped_svd)
+	x = torch.randn(4, 16)
+	prefixes = [x[:, :4], x[:, :8], x[:, :16]]
+
+	with torch.autocast("cpu", dtype=torch.bfloat16):
+		loss = procrustes_cascade_distillation_loss(prefixes)
+
+	assert seen_dtypes
+	assert all(dtype == torch.float32 for dtype in seen_dtypes)
+	assert torch.isfinite(loss)
+
+
 def test_procrustes_cascade_distillation_loss_skips_large_pairs():
 	x = torch.randn(3, 16)
 	prefixes = [x[:, :4], x[:, :8], x[:, :16]]
