@@ -1266,7 +1266,7 @@ class SuffixBalancedMRLHead(nn.Module):
 		return torch.stack([
 			F.cross_entropy(logits, targets)
 			for logits in self.last_suffix_logits
-		]).mean()
+		]).sum()
 
 
 class FixedFeatureLayer(nn.Linear):

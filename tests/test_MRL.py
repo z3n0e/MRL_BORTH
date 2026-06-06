@@ -289,10 +289,12 @@ def test_suffix_balanced_mrl_auxiliary_loss_is_finite_scalar():
 
     head(x)
     aux = head.auxiliary_loss(y)
+    expected = sum(F.cross_entropy(logits, y) for logits in head.last_suffix_logits)
 
     assert aux.dim() == 0
     assert torch.isfinite(aux)
     assert aux.item() >= 0
+    assert torch.allclose(aux, expected)
 
 
 def test_suffix_balanced_mrl_include_full_suffix():
