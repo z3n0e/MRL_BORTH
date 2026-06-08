@@ -15,8 +15,8 @@ model:
   residual_align_mode: orthogonal
   residual_align_orthogonal_map: matrix_exp
   residual_align_use_trivialization: 1
-  residual_align_mse_weight: 1.0
-  residual_align_cosine_weight: 1.0
+  residual_align_mse_weight: 10.0
+  residual_align_cosine_weight: 10.0
   residual_align_detach_prefix_target: 1
   t_orthogonal_mrl: 0
   t_orthogonal_map: matrix_exp

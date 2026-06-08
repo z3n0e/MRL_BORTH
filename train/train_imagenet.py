@@ -52,8 +52,8 @@ Section('model', 'model details').params(
     residual_align_mode=Param(And(str, OneOf(['orthogonal', 'frozen'])), 'Residual-aligned orthogonal transform mode', default='orthogonal'),
     residual_align_orthogonal_map=Param(And(str, OneOf(['matrix_exp', 'cayley', 'householder'])), 'Residual-aligned orthogonal parametrization map', default='matrix_exp'),
     residual_align_use_trivialization=Param(int, 'Use dynamic trivialization for residual-aligned orthogonal maps? (1/0)', default=1),
-    residual_align_mse_weight=Param(float, 'Weight for residual-to-previous-prefix MSE alignment', default=1.0),
-    residual_align_cosine_weight=Param(float, 'Weight for residual-to-rotated-residual cosine distance', default=1.0),
+    residual_align_mse_weight=Param(float, 'Weight for residual-to-previous-prefix MSE alignment', default=10.0),
+    residual_align_cosine_weight=Param(float, 'Weight for residual-to-rotated-residual cosine distance', default=10.0),
     residual_align_detach_prefix_target=Param(int, 'Detach previous prefix target in residual-aligned MSE? (1/0)', default=1),
     nesting_start=Param(int, '2**i will be starting dimension for nesting', default=3),
     fixed_feature=Param(int, 'In case we want to do the fixed feature training, by default it is 2048', default=2048),
@@ -964,12 +964,26 @@ class ImageNetTrainer:
                     loss_train = self.loss.weighted_all_loss(prefix_losses)
                 else:
                     loss_train = self.loss(output, target)
+                ce_loss_train = loss_train
                 fc = self.get_fc_module()
                 if hasattr(fc, "auxiliary_loss"):
                     auxiliary_loss = fc.auxiliary_loss(target)
                     loss_train = loss_train + auxiliary_loss
                     if hasattr(fc, "auxiliary_log_dict"):
                         auxiliary_step_log = fc.auxiliary_log_dict()
+                        if isinstance(fc, ResidualAlignedMRLHead):
+                            ce_value = float(ce_loss_train.detach().float().cpu().item())
+                            aux_value = float(auxiliary_loss.detach().float().cpu().item())
+                            mse_value = float(auxiliary_step_log.get('residual_aligned_mrl_mse', 0.0))
+                            cosine_value = float(auxiliary_step_log.get('residual_aligned_mrl_cosine_distance', 0.0))
+                            ratio_denominator = max(abs(ce_value), 1e-12)
+                            auxiliary_step_log.update({
+                                'residual_aligned_mrl_ce_loss': ce_value,
+                                'residual_aligned_mrl_total_loss': float(loss_train.detach().float().cpu().item()),
+                                'residual_aligned_mrl_aux_to_ce_ratio': aux_value / ratio_denominator,
+                                'residual_aligned_mrl_mse_to_ce_ratio': mse_value / ratio_denominator,
+                                'residual_aligned_mrl_cosine_to_ce_ratio': cosine_value / ratio_denominator,
+                            })
                     else:
                         auxiliary_step_log = {
                             'suffix_balanced_loss': float(auxiliary_loss.detach().float().cpu().item()),
@@ -1093,8 +1107,11 @@ class ImageNetTrainer:
                             names += ['suffix']
                             values += [f"{auxiliary_step_log['suffix_balanced_loss']:.3f}"]
                         elif 'residual_aligned_mrl_loss' in auxiliary_step_log:
-                            names += ['ralign']
-                            values += [f"{auxiliary_step_log['residual_aligned_mrl_loss']:.3f}"]
+                            names += ['ce', 'ralign']
+                            values += [
+                                f"{auxiliary_step_log.get('residual_aligned_mrl_ce_loss', 0.0):.3f}",
+                                f"{auxiliary_step_log['residual_aligned_mrl_loss']:.3f}",
+                            ]
 
                 msg = ', '.join(f'{n}={v}' for n, v in zip(names, values))
                 iterator.set_description(msg)
