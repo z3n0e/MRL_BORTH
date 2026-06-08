@@ -344,6 +344,75 @@ def procrustes_cascade_distillation_loss(
 	return torch.stack(losses).mean()
 
 
+def adjacent_residual_prefix_cosine_stats(prefixes, nesting_list, eps=1e-8):
+	prefixes = list(prefixes)
+	dims = [int(dim) for dim in nesting_list]
+	if len(prefixes) != len(dims):
+		raise ValueError(
+			f"Expected {len(dims)} prefixes for nesting_list, got {len(prefixes)}"
+		)
+
+	pair_stats = []
+	cosine_values = []
+	distance_values = []
+	for idx, (prev_dim, dim) in enumerate(zip(dims, dims[1:])):
+		residual_width = dim - prev_dim
+		if residual_width != prev_dim:
+			continue
+
+		prefix = prefixes[idx + 1]
+		if prefix.dim() != 2:
+			raise ValueError("prefixes must be 2D tensors with shape [B, d]")
+		if prefix.shape[1] < dim:
+			raise ValueError(
+				f"Prefix for dim {dim} has width {prefix.shape[1]}, expected at least {dim}"
+			)
+
+		previous = prefix[:, :prev_dim].float()
+		residual = prefix[:, prev_dim:dim].float()
+		cosine = F.cosine_similarity(residual, previous, dim=1, eps=eps)
+		distance = 1.0 - cosine
+		mean_cosine = float(cosine.detach().mean().cpu().item())
+		mean_distance = float(distance.detach().mean().cpu().item())
+		pair_label = f"{dim}<-{prev_dim}"
+
+		pair_stats.append({
+			"pair": pair_label,
+			"small_dim": prev_dim,
+			"large_dim": dim,
+			"mean_cosine": mean_cosine,
+			"mean_cosine_distance": mean_distance,
+		})
+		cosine_values.append(cosine.detach())
+		distance_values.append(distance.detach())
+
+	if not cosine_values:
+		return {
+			"residual_prefix_alignment_pair_count": 0,
+			"residual_prefix_cosine_mean": 0.0,
+			"residual_prefix_cosine_distance_mean": 0.0,
+			"residual_prefix_cosine_min": 0.0,
+			"residual_prefix_cosine_max": 0.0,
+			"residual_prefix_alignment_pairs": [],
+		}
+
+	all_cosines = torch.cat([values.reshape(-1) for values in cosine_values])
+	all_distances = torch.cat([values.reshape(-1) for values in distance_values])
+	stats = {
+		"residual_prefix_alignment_pair_count": len(pair_stats),
+		"residual_prefix_cosine_mean": float(all_cosines.mean().cpu().item()),
+		"residual_prefix_cosine_distance_mean": float(all_distances.mean().cpu().item()),
+		"residual_prefix_cosine_min": float(all_cosines.min().cpu().item()),
+		"residual_prefix_cosine_max": float(all_cosines.max().cpu().item()),
+		"residual_prefix_alignment_pairs": pair_stats,
+	}
+	for pair in pair_stats:
+		label = f"{pair['large_dim']}_vs_{pair['small_dim']}"
+		stats[f"residual_prefix_cosine_{label}"] = pair["mean_cosine"]
+		stats[f"residual_prefix_cosine_distance_{label}"] = pair["mean_cosine_distance"]
+	return stats
+
+
 class Matryoshka_CE_Loss(nn.Module):
 	def __init__(self, relative_importance: List[float]=None,
 	             mrl_loss_mode="all", nesting_list=None,
@@ -791,6 +860,150 @@ class BlockOrthogonalResidualMRLHead(nn.Module):
 		if not self.bor_residual_orthogonal:
 			return None
 		return torch.stack([layer.alpha() for layer in self.prefix_orthogonal_layers])
+
+
+class ResidualAlignedMRLHead(nn.Module):
+	def __init__(self, nesting_list, num_classes, mode="orthogonal",
+	             orthogonal_map="matrix_exp", use_trivialization=True,
+	             mse_weight=1.0, cosine_weight=1.0,
+	             detach_prefix_target=True, eps=1e-8):
+		super().__init__()
+		self.nesting_list = [int(dim) for dim in nesting_list]
+		self.num_classes = int(num_classes)
+		allowed_modes = {"orthogonal", "frozen"}
+		allowed_maps = {"matrix_exp", "cayley", "householder"}
+		if mode not in allowed_modes:
+			raise ValueError(f"mode must be one of {sorted(allowed_modes)}, got {mode!r}")
+		if orthogonal_map not in allowed_maps:
+			raise ValueError(f"orthogonal_map must be one of {sorted(allowed_maps)}, got {orthogonal_map!r}")
+		if mode == "orthogonal" and orthogonal is None:
+			raise RuntimeError(
+				"torch.nn.utils.parametrizations.orthogonal is required "
+				"for ResidualAlignedMRLHead(mode='orthogonal')"
+			)
+
+		self.mode = mode
+		self.orthogonal_map = orthogonal_map
+		self.use_trivialization = bool(use_trivialization)
+		self.mse_weight = float(mse_weight)
+		self.cosine_weight = float(cosine_weight)
+		self.detach_prefix_target = bool(detach_prefix_target)
+		self.eps = float(eps)
+		self.block_widths = block_widths_from_nesting_list(self.nesting_list)
+
+		for prev_dim, block_width in zip(self.nesting_list[:-1], self.block_widths[1:]):
+			if block_width != prev_dim:
+				raise ValueError(
+					"ResidualAlignedMRLHead requires each new residual block to "
+					"have the same width as the previous prefix. This holds for "
+					"doubling nesting lists such as [8, 16, 32, ...]."
+				)
+
+		self.classifiers = nn.ModuleList([
+			nn.Linear(dim, self.num_classes)
+			for dim in self.nesting_list
+		])
+		self.residual_orthogonal_layers = nn.ModuleList([
+			make_orthogonal_linear_layer(
+				prev_dim,
+				mode=self.mode,
+				orthogonal_map=self.orthogonal_map,
+				use_trivialization=self.use_trivialization,
+				identity_init=True,
+			)
+			for prev_dim in self.nesting_list[:-1]
+		])
+
+		self.last_blocks = None
+		self.last_prefixes = None
+		self.last_residuals = None
+		self.last_rotated_residuals = None
+		self.last_auxiliary_loss_stats = None
+		self.last_input = None
+		self.capture_input_for_gradient_conflict = False
+
+	def forward(self, x):
+		if x.dim() != 2:
+			raise ValueError(f"ResidualAlignedMRLHead expects [B, D] input, got shape {tuple(x.shape)}")
+		if x.shape[1] != self.nesting_list[-1]:
+			raise ValueError(f"Expected feature dimension {self.nesting_list[-1]}, got {x.shape[1]}")
+
+		self.last_input = x if self.capture_input_for_gradient_conflict else None
+		blocks = list(torch.split(x, self.block_widths, dim=1))
+		prefixes = [x[:, :dim] for dim in self.nesting_list]
+		residuals = blocks[1:]
+		rotated_residuals = [
+			layer(residual.detach())
+			for layer, residual in zip(self.residual_orthogonal_layers, residuals)
+		]
+
+		self.last_blocks = blocks
+		self.last_prefixes = prefixes
+		self.last_residuals = residuals
+		self.last_rotated_residuals = rotated_residuals
+		self.last_auxiliary_loss_stats = None
+
+		return tuple(
+			classifier(prefix)
+			for classifier, prefix in zip(self.classifiers, prefixes)
+		)
+
+	def auxiliary_loss(self, targets=None):
+		if self.last_prefixes is None or self.last_rotated_residuals is None:
+			raise RuntimeError("auxiliary_loss() requires a previous forward pass")
+		if len(self.last_prefixes) < 2:
+			return self.classifiers[0].weight.new_zeros(())
+
+		mse_losses = []
+		cosine_losses = []
+		pair_stats = []
+		for prev_dim, dim, previous_prefix, residual, rotated in zip(
+			self.nesting_list[:-1],
+			self.nesting_list[1:],
+			self.last_prefixes[:-1],
+			self.last_residuals,
+			self.last_rotated_residuals,
+		):
+			target_prefix = previous_prefix.detach() if self.detach_prefix_target else previous_prefix
+			mse_loss = F.mse_loss(rotated.float(), target_prefix.float())
+			cosine = F.cosine_similarity(residual.float(), rotated.float(), dim=1, eps=self.eps)
+			cosine_loss = (1.0 - cosine).mean()
+			mse_losses.append(mse_loss)
+			cosine_losses.append(cosine_loss)
+			pair_stats.append({
+				"pair": f"{dim}<-{prev_dim}",
+				"small_dim": prev_dim,
+				"large_dim": dim,
+				"mse": float(mse_loss.detach().cpu().item()),
+				"cosine_distance": float(cosine_loss.detach().cpu().item()),
+				"cosine": float(cosine.detach().mean().cpu().item()),
+			})
+
+		mse = torch.stack(mse_losses).mean()
+		cosine_distance = torch.stack(cosine_losses).mean()
+		loss = self.mse_weight * mse + self.cosine_weight * cosine_distance
+		self.last_auxiliary_loss_stats = {
+			"residual_aligned_mrl_loss": float(loss.detach().cpu().item()),
+			"residual_aligned_mrl_mse": float(mse.detach().cpu().item()),
+			"residual_aligned_mrl_cosine_distance": float(cosine_distance.detach().cpu().item()),
+			"residual_aligned_mrl_mse_weight": self.mse_weight,
+			"residual_aligned_mrl_cosine_weight": self.cosine_weight,
+			"residual_aligned_mrl_pairs": pair_stats,
+		}
+		for pair in pair_stats:
+			label = f"{pair['large_dim']}_vs_{pair['small_dim']}"
+			self.last_auxiliary_loss_stats[f"residual_aligned_mrl_mse_{label}"] = pair["mse"]
+			self.last_auxiliary_loss_stats[f"residual_aligned_mrl_cosine_distance_{label}"] = pair["cosine_distance"]
+			self.last_auxiliary_loss_stats[f"residual_aligned_mrl_cosine_{label}"] = pair["cosine"]
+		return loss
+
+	def auxiliary_log_dict(self):
+		return dict(self.last_auxiliary_loss_stats or {})
+
+	def block_norms(self):
+		if self.last_blocks is None:
+			raise RuntimeError("block_norms() requires a previous forward pass")
+		return torch.stack([block.norm(p=2, dim=1).mean() for block in self.last_blocks])
 
 
 class CascadeStopGradientMRLHead(nn.Module):

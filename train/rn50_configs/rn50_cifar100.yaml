@@ -11,6 +11,13 @@ lr:
   lr_schedule_type: cyclic
 model:
   arch: resnet50
+  residual_aligned_mrl: 0
+  residual_align_mode: orthogonal
+  residual_align_orthogonal_map: matrix_exp
+  residual_align_use_trivialization: 1
+  residual_align_mse_weight: 1.0
+  residual_align_cosine_weight: 1.0
+  residual_align_detach_prefix_target: 1
   t_orthogonal_mrl: 0
   t_orthogonal_map: matrix_exp
   bor_mrl: 0
@@ -37,6 +44,7 @@ training:
   momentum: 0.9
   optimizer: sgd
   seed: 0
+  residual_alignment_log_interval: 100
   weight_decay: 0.0001
   use_blurpool: 1
 validation:

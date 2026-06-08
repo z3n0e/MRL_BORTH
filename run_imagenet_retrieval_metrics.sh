@@ -5,7 +5,6 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 
 set -euo pipefail
-shopt -s nullglob
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RUN_DIR=${1:-${RUN_DIR:-}}
@@ -44,16 +43,18 @@ TRAINING_MRL_LOSS_MODE=${MRL_LOSS_MODE:-}
 TRAINING_SAMPLED_PREFIX_DISTRIBUTION=${SAMPLED_PREFIX_DISTRIBUTION:-}
 TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=${SAMPLED_PREFIX_LOG_INTERVAL:-}
 TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL=${MRL_GRADIENT_CONFLICT_INTERVAL:-}
+TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL=${RESIDUAL_ALIGNMENT_LOG_INTERVAL:-}
 TRAINING_MRL_CONFLICT_GATING=${MRL_CONFLICT_GATING:-}
 TRAINING_MRL_CONFLICT_MODE=${MRL_CONFLICT_MODE:-}
 TRAINING_MRL_CONFLICT_ALPHA=${MRL_CONFLICT_ALPHA:-}
 TRAINING_MRL_CONFLICT_EPS=${MRL_CONFLICT_EPS:-}
-TRAINING_T_ORTHOGONAL_MAP=${T_ORTHOGONAL_MAP:-}
-TRAINING_BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-}
-TRAINING_RECURSIVE_LINK_HIDDEN_RATIO=${RECURSIVE_LINK_HIDDEN_RATIO:-}
-TRAINING_RECURSIVE_LINK_DROPOUT=${RECURSIVE_LINK_DROPOUT:-}
-TRAINING_RECURSIVE_LINK_ALPHA_INIT=${RECURSIVE_LINK_ALPHA_INIT:-}
-TRAINING_RECURSIVE_LINK_STOP_GRADIENT=${RECURSIVE_LINK_STOP_GRADIENT:-}
+TRAINING_RESIDUAL_ALIGN_MODE=${RESIDUAL_ALIGN_MODE:-}
+TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP=${RESIDUAL_ALIGN_ORTHOGONAL_MAP:-}
+TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION=${RESIDUAL_ALIGN_USE_TRIVIALIZATION:-}
+TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT=${RESIDUAL_ALIGN_MSE_WEIGHT:-}
+TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT=${RESIDUAL_ALIGN_COSINE_WEIGHT:-}
+TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET=${RESIDUAL_ALIGN_DETACH_PREFIX_TARGET:-}
+TRAINING_RESIDUAL_INTERPOLATION_ALPHA=${RESIDUAL_INTERPOLATION_ALPHA:-}
 
 if [[ -f "$MANIFEST" ]]; then
     while IFS='=' read -r key value; do
@@ -70,6 +71,9 @@ if [[ -f "$MANIFEST" ]]; then
             mrl_gradient_conflict_interval)
                 [[ -z "$TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL" ]] && TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL=$value
                 ;;
+            residual_alignment_log_interval)
+                [[ -z "$TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL" ]] && TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL=$value
+                ;;
             mrl_conflict_gating)
                 [[ -z "$TRAINING_MRL_CONFLICT_GATING" ]] && TRAINING_MRL_CONFLICT_GATING=$value
                 ;;
@@ -82,23 +86,26 @@ if [[ -f "$MANIFEST" ]]; then
             mrl_conflict_eps)
                 [[ -z "$TRAINING_MRL_CONFLICT_EPS" ]] && TRAINING_MRL_CONFLICT_EPS=$value
                 ;;
-            t_orthogonal_map)
-                [[ -z "$TRAINING_T_ORTHOGONAL_MAP" ]] && TRAINING_T_ORTHOGONAL_MAP=$value
+            residual_align_mode)
+                [[ -z "$TRAINING_RESIDUAL_ALIGN_MODE" ]] && TRAINING_RESIDUAL_ALIGN_MODE=$value
                 ;;
-            bor_orthogonal_map)
-                [[ -z "$TRAINING_BOR_ORTHOGONAL_MAP" ]] && TRAINING_BOR_ORTHOGONAL_MAP=$value
+            residual_align_orthogonal_map)
+                [[ -z "$TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP" ]] && TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP=$value
                 ;;
-            recursive_link_hidden_ratio)
-                [[ -z "$TRAINING_RECURSIVE_LINK_HIDDEN_RATIO" ]] && TRAINING_RECURSIVE_LINK_HIDDEN_RATIO=$value
+            residual_align_use_trivialization)
+                [[ -z "$TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION" ]] && TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION=$value
                 ;;
-            recursive_link_dropout)
-                [[ -z "$TRAINING_RECURSIVE_LINK_DROPOUT" ]] && TRAINING_RECURSIVE_LINK_DROPOUT=$value
+            residual_align_mse_weight)
+                [[ -z "$TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT" ]] && TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT=$value
                 ;;
-            recursive_link_alpha_init)
-                [[ -z "$TRAINING_RECURSIVE_LINK_ALPHA_INIT" ]] && TRAINING_RECURSIVE_LINK_ALPHA_INIT=$value
+            residual_align_cosine_weight)
+                [[ -z "$TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT" ]] && TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT=$value
                 ;;
-            recursive_link_stop_gradient)
-                [[ -z "$TRAINING_RECURSIVE_LINK_STOP_GRADIENT" ]] && TRAINING_RECURSIVE_LINK_STOP_GRADIENT=$value
+            residual_align_detach_prefix_target)
+                [[ -z "$TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET" ]] && TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET=$value
+                ;;
+            residual_interpolation_alpha)
+                [[ -z "$TRAINING_RESIDUAL_INTERPOLATION_ALPHA" ]] && TRAINING_RESIDUAL_INTERPOLATION_ALPHA=$value
                 ;;
         esac
     done < "$MANIFEST"
@@ -108,16 +115,18 @@ TRAINING_MRL_LOSS_MODE=${TRAINING_MRL_LOSS_MODE:-all}
 TRAINING_SAMPLED_PREFIX_DISTRIBUTION=${TRAINING_SAMPLED_PREFIX_DISTRIBUTION:-uniform}
 TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=${TRAINING_SAMPLED_PREFIX_LOG_INTERVAL:-100}
 TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL=${TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL:-0}
+TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL=${TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL:-100}
 TRAINING_MRL_CONFLICT_GATING=${TRAINING_MRL_CONFLICT_GATING:-0}
 TRAINING_MRL_CONFLICT_MODE=${TRAINING_MRL_CONFLICT_MODE:-none}
 TRAINING_MRL_CONFLICT_ALPHA=${TRAINING_MRL_CONFLICT_ALPHA:-0.5}
 TRAINING_MRL_CONFLICT_EPS=${TRAINING_MRL_CONFLICT_EPS:-1e-8}
-TRAINING_T_ORTHOGONAL_MAP=${TRAINING_T_ORTHOGONAL_MAP:-matrix_exp}
-TRAINING_BOR_ORTHOGONAL_MAP=${TRAINING_BOR_ORTHOGONAL_MAP:-matrix_exp}
-TRAINING_RECURSIVE_LINK_HIDDEN_RATIO=${TRAINING_RECURSIVE_LINK_HIDDEN_RATIO:-0.5}
-TRAINING_RECURSIVE_LINK_DROPOUT=${TRAINING_RECURSIVE_LINK_DROPOUT:-0.0}
-TRAINING_RECURSIVE_LINK_ALPHA_INIT=${TRAINING_RECURSIVE_LINK_ALPHA_INIT:--4.0}
-TRAINING_RECURSIVE_LINK_STOP_GRADIENT=${TRAINING_RECURSIVE_LINK_STOP_GRADIENT:-0}
+TRAINING_RESIDUAL_ALIGN_MODE=${TRAINING_RESIDUAL_ALIGN_MODE:-orthogonal}
+TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP=${TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP:-matrix_exp}
+TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION=${TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION:-1}
+TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT=${TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT:-1.0}
+TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT=${TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT:-1.0}
+TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET=${TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET:-1}
+TRAINING_RESIDUAL_INTERPOLATION_ALPHA=${TRAINING_RESIDUAL_INTERPOLATION_ALPHA:-0.5}
 
 PYTHON=${PYTHON:-python}
 RETRIEVAL_ROOT=${RETRIEVAL_ROOT:-"$RUN_DIR/retrieval"}
@@ -134,16 +143,6 @@ NESTED_DIMS=${NESTED_DIMS:-"8 16 32 64 128 256 512 1024 2048"}
 USE_GPU=${USE_GPU:-1}
 REBUILD_INDEX=${REBUILD_INDEX:-0}
 FORCE_ARRAYS=${FORCE_ARRAYS:-0}
-T_ORTHOGONAL_MAP=${T_ORTHOGONAL_MAP:-$TRAINING_T_ORTHOGONAL_MAP}
-BOR_ORTHOGONAL_MAP=${BOR_ORTHOGONAL_MAP:-$TRAINING_BOR_ORTHOGONAL_MAP}
-BOR_USE_TRIVIALIZATION=${BOR_USE_TRIVIALIZATION:-1}
-BOR_STOP_GRADIENT=${BOR_STOP_GRADIENT:-0}
-BOR_RESIDUAL_ALPHA_INIT=${BOR_RESIDUAL_ALPHA_INIT:--3.0}
-CASCADE_STOP_GRADIENT=${CASCADE_STOP_GRADIENT:-1}
-RECURSIVE_LINK_HIDDEN_RATIO=${RECURSIVE_LINK_HIDDEN_RATIO:-$TRAINING_RECURSIVE_LINK_HIDDEN_RATIO}
-RECURSIVE_LINK_DROPOUT=${RECURSIVE_LINK_DROPOUT:-$TRAINING_RECURSIVE_LINK_DROPOUT}
-RECURSIVE_LINK_ALPHA_INIT=${RECURSIVE_LINK_ALPHA_INIT:-$TRAINING_RECURSIVE_LINK_ALPHA_INIT}
-RECURSIVE_LINK_STOP_GRADIENT=${RECURSIVE_LINK_STOP_GRADIENT:-$TRAINING_RECURSIVE_LINK_STOP_GRADIENT}
 
 mkdir -p "$RETRIEVAL_ROOT" "$METRICS_DIR"
 
@@ -156,22 +155,9 @@ echo "Index type: $INDEX_TYPE"
 echo "Neighbor shortlist length: $K"
 echo "Metric k values: $SHORTLIST"
 echo "Training MRL loss mode: $TRAINING_MRL_LOSS_MODE"
-echo "Training sampled-prefix distribution: $TRAINING_SAMPLED_PREFIX_DISTRIBUTION"
-echo "Training sampled-prefix log interval: $TRAINING_SAMPLED_PREFIX_LOG_INTERVAL"
-echo "Training MRL gradient conflict interval: $TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL"
-echo "Training MRL conflict gating: $TRAINING_MRL_CONFLICT_GATING"
-echo "Training MRL conflict mode: $TRAINING_MRL_CONFLICT_MODE"
-echo "Training MRL conflict alpha: $TRAINING_MRL_CONFLICT_ALPHA"
-echo "Training MRL conflict eps: $TRAINING_MRL_CONFLICT_EPS"
-echo "T orthogonal map: $T_ORTHOGONAL_MAP"
-echo "BOR orthogonal map: $BOR_ORTHOGONAL_MAP"
-echo "BOR stop gradient: $BOR_STOP_GRADIENT"
-echo "BOR residual alpha init: $BOR_RESIDUAL_ALPHA_INIT"
-echo "Cascade stop gradient: $CASCADE_STOP_GRADIENT"
-echo "RecursiveLink hidden ratio: $RECURSIVE_LINK_HIDDEN_RATIO"
-echo "RecursiveLink dropout: $RECURSIVE_LINK_DROPOUT"
-echo "RecursiveLink alpha init: $RECURSIVE_LINK_ALPHA_INIT"
-echo "RecursiveLink stop gradient: $RECURSIVE_LINK_STOP_GRADIENT"
+echo "Training residual alignment log interval: $TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL"
+echo "Residual-Aligned MRL orthogonal map: $TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP"
+echo "Residual interpolation alpha: $TRAINING_RESIDUAL_INTERPOLATION_ALPHA"
 echo
 
 run_method() {
@@ -181,7 +167,8 @@ run_method() {
     local rep_size=$4
     local dims=$5
     local feature_config=$6
-    shift 6
+    local residual_alpha=$7
+    shift 7
 
     if [[ ! -f "$checkpoint" ]]; then
         echo "Skipping $name: missing checkpoint $checkpoint"
@@ -200,6 +187,7 @@ run_method() {
     echo "Checkpoint: $checkpoint"
     echo "Feature config: $feature_config"
     echo "Dims: $dims"
+    echo "Residual interpolation alpha: $residual_alpha"
 
     local deterministic_args=()
     if [[ "$DETERMINISTIC" == "1" ]]; then
@@ -234,6 +222,7 @@ run_method() {
         --rep-size "$rep_size"
         --index-type "$INDEX_TYPE"
         --k "$K"
+        --residual-interpolate-alpha "$residual_alpha"
         --dims
     )
     local dim
@@ -263,6 +252,7 @@ run_method() {
         --eval-config vanilla
         --index-type "$INDEX_TYPE"
         --neighbor-k "$K"
+        --residual-interpolate-alpha "$residual_alpha"
         --output-json "$metrics_json"
         --dims
     )
@@ -284,129 +274,37 @@ run_method() {
 
 run_method mrl \
     "$CHECKPOINT_DIR/mrl_final_weights.pt" \
-    mrl 2048 "$NESTED_DIMS" mrl1_e0_ff2048 \
+    mrl 2048 "$NESTED_DIMS" mrl1_e0_ff2048 0.0 \
     --mrl
 
-run_method mrle \
-    "$CHECKPOINT_DIR/mrle_final_weights.pt" \
-    mrl_e 2048 "$NESTED_DIMS" mrl1_e1_ff2048 \
-    --mrl --efficient
-
-run_method mrl_pcd \
-    "$CHECKPOINT_DIR/mrl_pcd_final_weights.pt" \
-    mrl_pcd 2048 "$NESTED_DIMS" mrl1_e0_ff2048 \
-    --mrl
-
-run_method recursive_link_mrl \
-    "$CHECKPOINT_DIR/recursive_link_mrl_final_weights.pt" \
-    recursive_link_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --recursive_link_mrl \
-    --recursive_link_hidden_ratio "$RECURSIVE_LINK_HIDDEN_RATIO" \
-    --recursive_link_dropout "$RECURSIVE_LINK_DROPOUT" \
-    --recursive_link_alpha_init "$RECURSIVE_LINK_ALPHA_INIT" \
-    --recursive_link_stop_gradient "$RECURSIVE_LINK_STOP_GRADIENT"
-
-run_method recursive_link_mrl_pcd \
-    "$CHECKPOINT_DIR/recursive_link_mrl_pcd_final_weights.pt" \
-    recursive_link_mrl_pcd 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --recursive_link_mrl \
-    --recursive_link_hidden_ratio "$RECURSIVE_LINK_HIDDEN_RATIO" \
-    --recursive_link_dropout "$RECURSIVE_LINK_DROPOUT" \
-    --recursive_link_alpha_init "$RECURSIVE_LINK_ALPHA_INIT" \
-    --recursive_link_stop_gradient "$RECURSIVE_LINK_STOP_GRADIENT"
-
-run_method t_orthogonal_mrl \
-    "$CHECKPOINT_DIR/t_orthogonal_mrl_final_weights.pt" \
-    t_orthogonal_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --t_orthogonal_mrl \
-    --t_orthogonal_map "$T_ORTHOGONAL_MAP" \
-    --bor_mode orthogonal \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
-    --bor_stop_gradient "$BOR_STOP_GRADIENT"
-
-run_method full_feature \
-    "$CHECKPOINT_DIR/full_feature_final_weights.pt" \
-    ff 2048 "2048" mrl0_e0_ff2048 \
-    --rep_size 2048
-
-for fixed_checkpoint in "$CHECKPOINT_DIR"/fixed_*_final_weights.pt; do
-    fixed_name=$(basename "$fixed_checkpoint" _final_weights.pt)
-    fixed_dim=${fixed_name#fixed_}
-    run_method "$fixed_name" \
-        "$fixed_checkpoint" \
-        ff "$fixed_dim" "$fixed_dim" "mrl0_e0_ff${fixed_dim}" \
-        --rep_size "$fixed_dim"
-done
-
-run_method bor_mrl \
-    "$CHECKPOINT_DIR/bor_mrl_final_weights.pt" \
-    bor_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --bor_mrl \
-    --bor_mode orthogonal \
-    --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
-    --bor_stop_gradient "$BOR_STOP_GRADIENT"
-
-run_method bor_mrl_residual \
-    "$CHECKPOINT_DIR/bor_mrl_residual_final_weights.pt" \
-    bor_mrl_residual 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --bor_mrl \
-    --bor_mode orthogonal \
-    --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
-    --bor_stop_gradient "$BOR_STOP_GRADIENT" \
-    --bor_residual_orthogonal 1 \
-    --bor_residual_alpha_init "$BOR_RESIDUAL_ALPHA_INIT"
-
-run_method bor_block_mrl \
-    "$CHECKPOINT_DIR/bor_block_mrl_final_weights.pt" \
-    bor_block_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --bor_block_mrl \
-    --bor_mode orthogonal \
-    --bor_orthogonal_map "$BOR_ORTHOGONAL_MAP" \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
-    --bor_stop_gradient "$BOR_STOP_GRADIENT"
-
-run_method cascade_stop_gradient_mrl \
-    "$CHECKPOINT_DIR/cascade_stop_gradient_mrl_final_weights.pt" \
-    cascade_stop_gradient_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --cascade_stop_gradient_mrl \
-    --cascade_stop_gradient "$CASCADE_STOP_GRADIENT"
-
-run_method bor_mrl_cayley \
-    "$CHECKPOINT_DIR/bor_mrl_cayley_final_weights.pt" \
-    bor_mrl_cayley 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --bor_mrl \
-    --bor_mode orthogonal \
-    --bor_orthogonal_map cayley \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
-    --bor_stop_gradient "$BOR_STOP_GRADIENT"
-
-run_method bor_mrl_householder \
-    "$CHECKPOINT_DIR/bor_mrl_householder_final_weights.pt" \
-    bor_mrl_householder 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --bor_mrl \
-    --bor_mode orthogonal \
-    --bor_orthogonal_map householder \
-    --bor_use_trivialization "$BOR_USE_TRIVIALIZATION" \
-    --bor_stop_gradient "$BOR_STOP_GRADIENT"
-
-run_method bor_mrl_frozen \
-    "$CHECKPOINT_DIR/bor_mrl_frozen_final_weights.pt" \
-    bor_mrl_frozen 2048 "$NESTED_DIMS" mrl0_e0_ff2048 \
-    --bor_mrl \
-    --bor_mode frozen \
-    --bor_stop_gradient "$BOR_STOP_GRADIENT"
+run_method residual_aligned_mrl \
+    "$CHECKPOINT_DIR/residual_aligned_mrl_final_weights.pt" \
+    residual_aligned_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 "$TRAINING_RESIDUAL_INTERPOLATION_ALPHA" \
+    --residual_aligned_mrl \
+    --residual_align_mode "$TRAINING_RESIDUAL_ALIGN_MODE" \
+    --residual_align_orthogonal_map "$TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP" \
+    --residual_align_use_trivialization "$TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION" \
+    --residual_align_mse_weight "$TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT" \
+    --residual_align_cosine_weight "$TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT" \
+    --residual_align_detach_prefix_target "$TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET"
 
 "$PYTHON" - "$METRICS_DIR" "$SUMMARY_CSV" \
     "$TRAINING_MRL_LOSS_MODE" \
     "$TRAINING_SAMPLED_PREFIX_DISTRIBUTION" \
     "$TRAINING_SAMPLED_PREFIX_LOG_INTERVAL" \
     "$TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL" \
+    "$TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL" \
     "$TRAINING_MRL_CONFLICT_GATING" \
     "$TRAINING_MRL_CONFLICT_MODE" \
     "$TRAINING_MRL_CONFLICT_ALPHA" \
-    "$TRAINING_MRL_CONFLICT_EPS" <<'PY'
+    "$TRAINING_MRL_CONFLICT_EPS" \
+    "$TRAINING_RESIDUAL_ALIGN_MODE" \
+    "$TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP" \
+    "$TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION" \
+    "$TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT" \
+    "$TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT" \
+    "$TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET" \
+    "$TRAINING_RESIDUAL_INTERPOLATION_ALPHA" <<'PY'
 import csv
 import json
 import sys
@@ -414,14 +312,22 @@ from pathlib import Path
 
 metrics_dir = Path(sys.argv[1])
 summary_csv = Path(sys.argv[2])
-training_mrl_loss_mode = sys.argv[3] if len(sys.argv) > 3 else ""
-training_sampled_prefix_distribution = sys.argv[4] if len(sys.argv) > 4 else ""
-training_sampled_prefix_log_interval = sys.argv[5] if len(sys.argv) > 5 else ""
-training_mrl_gradient_conflict_interval = sys.argv[6] if len(sys.argv) > 6 else ""
-training_mrl_conflict_gating = sys.argv[7] if len(sys.argv) > 7 else ""
-training_mrl_conflict_mode = sys.argv[8] if len(sys.argv) > 8 else ""
-training_mrl_conflict_alpha = sys.argv[9] if len(sys.argv) > 9 else ""
-training_mrl_conflict_eps = sys.argv[10] if len(sys.argv) > 10 else ""
+training_mrl_loss_mode = sys.argv[3]
+training_sampled_prefix_distribution = sys.argv[4]
+training_sampled_prefix_log_interval = sys.argv[5]
+training_mrl_gradient_conflict_interval = sys.argv[6]
+training_residual_alignment_log_interval = sys.argv[7]
+training_mrl_conflict_gating = sys.argv[8]
+training_mrl_conflict_mode = sys.argv[9]
+training_mrl_conflict_alpha = sys.argv[10]
+training_mrl_conflict_eps = sys.argv[11]
+training_residual_align_mode = sys.argv[12]
+training_residual_align_orthogonal_map = sys.argv[13]
+training_residual_align_use_trivialization = sys.argv[14]
+training_residual_align_mse_weight = sys.argv[15]
+training_residual_align_cosine_weight = sys.argv[16]
+training_residual_align_detach_prefix_target = sys.argv[17]
+training_residual_interpolation_alpha = sys.argv[18]
 rows = []
 
 for path in sorted(metrics_dir.glob("*.json")):
@@ -435,13 +341,22 @@ for path in sorted(metrics_dir.glob("*.json")):
             "training_sampled_prefix_distribution": training_sampled_prefix_distribution,
             "training_sampled_prefix_log_interval": training_sampled_prefix_log_interval,
             "training_mrl_gradient_conflict_interval": training_mrl_gradient_conflict_interval,
+            "training_residual_alignment_log_interval": training_residual_alignment_log_interval,
             "training_mrl_conflict_gating": training_mrl_conflict_gating,
             "training_mrl_conflict_mode": training_mrl_conflict_mode,
             "training_mrl_conflict_alpha": training_mrl_conflict_alpha,
             "training_mrl_conflict_eps": training_mrl_conflict_eps,
+            "training_residual_align_mode": training_residual_align_mode,
+            "training_residual_align_orthogonal_map": training_residual_align_orthogonal_map,
+            "training_residual_align_use_trivialization": training_residual_align_use_trivialization,
+            "training_residual_align_mse_weight": training_residual_align_mse_weight,
+            "training_residual_align_cosine_weight": training_residual_align_cosine_weight,
+            "training_residual_align_detach_prefix_target": training_residual_align_detach_prefix_target,
+            "training_residual_interpolation_alpha": training_residual_interpolation_alpha,
             "feature_config": data.get("feature_config", ""),
             "eval_config": data.get("eval_config", ""),
             "index_type": data.get("index_type", ""),
+            "residual_interpolate_alpha": data.get("residual_interpolate_alpha", ""),
             "dim": metric.get("dim", ""),
             "k": metric.get("k", ""),
             "top1": metric.get("top1", ""),
@@ -457,11 +372,20 @@ fieldnames = [
     "training_sampled_prefix_distribution",
     "training_sampled_prefix_log_interval",
     "training_mrl_gradient_conflict_interval",
+    "training_residual_alignment_log_interval",
     "training_mrl_conflict_gating",
     "training_mrl_conflict_mode",
     "training_mrl_conflict_alpha",
     "training_mrl_conflict_eps",
+    "training_residual_align_mode",
+    "training_residual_align_orthogonal_map",
+    "training_residual_align_use_trivialization",
+    "training_residual_align_mse_weight",
+    "training_residual_align_cosine_weight",
+    "training_residual_align_detach_prefix_target",
+    "training_residual_interpolation_alpha",
     "feature_config", "eval_config", "index_type",
+    "residual_interpolate_alpha",
     "dim", "k", "top1", "mAP", "precision", "recall", "topk",
     "neighbors_path",
 ]

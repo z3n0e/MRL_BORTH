@@ -111,6 +111,8 @@ def retrieval_head_processing_name(args):
 		return "Suffix-Balanced MRL"
 	if args.bidirectional_mrl:
 		return "Bidirectional MRL"
+	if args.residual_aligned_mrl:
+		return "Residual-Aligned MRL"
 	if args.recursive_link_mrl:
 		return "RecursiveLink-MRL"
 	if args.t_orthogonal_mrl:
@@ -126,6 +128,8 @@ def method_name(args):
 		return "suffix_balanced_mrl"
 	if args.bidirectional_mrl:
 		return "bidirectional_mrl"
+	if args.residual_aligned_mrl:
+		return "residual_aligned_mrl"
 	if args.t_orthogonal_mrl:
 		return "t_orthogonal_mrl"
 	if args.bor_mrl:
@@ -161,6 +165,13 @@ parser.add_argument('--workers', type=int, default=12, help='num workers for dat
 parser.add_argument('--bidirectional_mrl', action='store_true', help='Use Bidirectional MRL')
 parser.add_argument('--suffix_balanced_mrl', action='store_true', help='Use Suffix-Balanced MRL')
 parser.add_argument('--suffix_balanced_include_full', type=int, default=0, help='Add a full-dimension suffix head for Suffix-Balanced MRL')
+parser.add_argument('--residual_aligned_mrl', action='store_true', help='Use residual-aligned orthogonal MRL')
+parser.add_argument('--residual_align_mode', type=str, choices=['orthogonal', 'frozen'], default='orthogonal', help='Residual-aligned orthogonal transform mode')
+parser.add_argument('--residual_align_orthogonal_map', type=str, choices=['matrix_exp', 'cayley', 'householder'], default='matrix_exp', help='Residual-aligned orthogonal parametrization map')
+parser.add_argument('--residual_align_use_trivialization', type=int, default=1, help='Use dynamic trivialization for residual-aligned orthogonal maps')
+parser.add_argument('--residual_align_mse_weight', type=float, default=1.0, help='Weight for residual-to-previous-prefix MSE alignment')
+parser.add_argument('--residual_align_cosine_weight', type=float, default=1.0, help='Weight for residual-to-rotated-residual cosine distance')
+parser.add_argument('--residual_align_detach_prefix_target', type=int, default=1, help='Detach previous prefix target in residual-aligned MSE')
 parser.add_argument('--t_orthogonal_mrl', action='store_true', help='Use T-orthogonal transition MRL')
 parser.add_argument('--t_orthogonal_map', type=str, choices=['matrix_exp', 'householder', 'household'], default='matrix_exp', help='T orthogonal parametrization map')
 parser.add_argument('--bor_mrl', action='store_true', help='Use recursive-prefix Block-Orthogonal Residual MRL')
@@ -199,6 +210,7 @@ args = parser.parse_args()
 custom_mrl_variants = [
 	args.bidirectional_mrl,
 	args.suffix_balanced_mrl,
+	args.residual_aligned_mrl,
 	args.t_orthogonal_mrl,
 	args.bor_mrl,
 	args.bor_block_mrl,
@@ -206,7 +218,7 @@ custom_mrl_variants = [
 	args.recursive_link_mrl,
 ]
 if sum(custom_mrl_variants) > 1:
-	raise ValueError("Choose only one custom MRL method: --bidirectional_mrl, --suffix_balanced_mrl, --t_orthogonal_mrl, --bor_mrl, --bor_block_mrl, --cascade_stop_gradient_mrl, or --recursive_link_mrl.")
+	raise ValueError("Choose only one custom MRL method: --bidirectional_mrl, --suffix_balanced_mrl, --residual_aligned_mrl, --t_orthogonal_mrl, --bor_mrl, --bor_block_mrl, --cascade_stop_gradient_mrl, or --recursive_link_mrl.")
 if any(custom_mrl_variants) and args.mrl:
 	raise ValueError("Custom MRL variants are their own MRL methods; do not combine them with --mrl.")
 if any(custom_mrl_variants) and args.efficient:
@@ -227,6 +239,17 @@ elif args.bidirectional_mrl:
 	model.fc = BidirectionalMRLHead(
 		NESTING_LIST,
 		num_classes=num_classes,
+	)
+elif args.residual_aligned_mrl:
+	model.fc = ResidualAlignedMRLHead(
+		NESTING_LIST,
+		num_classes=num_classes,
+		mode=args.residual_align_mode,
+		orthogonal_map=args.residual_align_orthogonal_map,
+		use_trivialization=bool(args.residual_align_use_trivialization),
+		mse_weight=args.residual_align_mse_weight,
+		cosine_weight=args.residual_align_cosine_weight,
+		detach_prefix_target=bool(args.residual_align_detach_prefix_target),
 	)
 elif args.t_orthogonal_mrl:
 	model.fc = TOrthogonalMRLHead(
@@ -287,7 +310,7 @@ apply_blurpool(model)
 model.load_state_dict(get_ckpt(args.path)) # Accept DataParallel/legacy module-prefixed checkpoints.
 model = model.cuda()
 model.eval()
-is_nested_model = args.mrl or args.bidirectional_mrl or args.suffix_balanced_mrl or args.t_orthogonal_mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl or args.recursive_link_mrl
+is_nested_model = args.mrl or args.bidirectional_mrl or args.suffix_balanced_mrl or args.residual_aligned_mrl or args.t_orthogonal_mrl or args.bor_mrl or args.bor_block_mrl or args.cascade_stop_gradient_mrl or args.recursive_link_mrl
 
 normalize = transforms.Normalize(mean=dataset_config['mean'], std=dataset_config['std'])
 test_transform = transforms.Compose([
@@ -363,6 +386,13 @@ if not args.retrieval:
 		'bidirectional_mrl': bool(args.bidirectional_mrl),
 		'suffix_balanced_mrl': bool(args.suffix_balanced_mrl),
 		'suffix_balanced_include_full': bool(args.suffix_balanced_include_full),
+		'residual_aligned_mrl': bool(args.residual_aligned_mrl),
+		'residual_align_mode': args.residual_align_mode,
+		'residual_align_orthogonal_map': args.residual_align_orthogonal_map,
+		'residual_align_use_trivialization': bool(args.residual_align_use_trivialization),
+		'residual_align_mse_weight': float(args.residual_align_mse_weight),
+		'residual_align_cosine_weight': float(args.residual_align_cosine_weight),
+		'residual_align_detach_prefix_target': bool(args.residual_align_detach_prefix_target),
 		't_orthogonal_mrl': bool(args.t_orthogonal_mrl),
 		't_orthogonal_map': resolve_t_orthogonal_map(args.t_orthogonal_map),
 		'bor_mrl': bool(args.bor_mrl),
@@ -395,7 +425,7 @@ if not args.retrieval:
 
 	# saving torch tensor for model analysis... 
 	if args.save_logits or args.save_softmax or args.save_predictions:
-		save_string = f"mrl={args.mrl}_bidirectional_mrl={args.bidirectional_mrl}_suffix_balanced_mrl={args.suffix_balanced_mrl}_t_orthogonal_mrl={args.t_orthogonal_mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_cascade_stop_gradient_mrl={args.cascade_stop_gradient_mrl}_recursive_link_mrl={args.recursive_link_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
+		save_string = f"mrl={args.mrl}_bidirectional_mrl={args.bidirectional_mrl}_suffix_balanced_mrl={args.suffix_balanced_mrl}_residual_aligned_mrl={args.residual_aligned_mrl}_t_orthogonal_mrl={args.t_orthogonal_mrl}_bor_mrl={args.bor_mrl}_bor_block_mrl={args.bor_block_mrl}_cascade_stop_gradient_mrl={args.cascade_stop_gradient_mrl}_recursive_link_mrl={args.recursive_link_mrl}_efficient={args.efficient}_dataset={args.dataset}_tta={args.tta}"
 		if args.save_logits:
 			torch.save(logits, save_string+"_logits.pth")
 		if args.save_predictions:

@@ -48,6 +48,13 @@ Section('model', 'model details').params(
     bidirectional_mrl=Param(int, "Use Bidirectional MRL? (1/0)", default=0),
     suffix_balanced_mrl=Param(int, "Use Suffix-Balanced MRL? (1/0)", default=0),
     suffix_balanced_include_full=Param(int, "Add a full-dimension suffix head for Suffix-Balanced MRL? (1/0)", default=0),
+    residual_aligned_mrl=Param(int, 'Use residual-aligned orthogonal MRL? (1/0)', default=0),
+    residual_align_mode=Param(And(str, OneOf(['orthogonal', 'frozen'])), 'Residual-aligned orthogonal transform mode', default='orthogonal'),
+    residual_align_orthogonal_map=Param(And(str, OneOf(['matrix_exp', 'cayley', 'householder'])), 'Residual-aligned orthogonal parametrization map', default='matrix_exp'),
+    residual_align_use_trivialization=Param(int, 'Use dynamic trivialization for residual-aligned orthogonal maps? (1/0)', default=1),
+    residual_align_mse_weight=Param(float, 'Weight for residual-to-previous-prefix MSE alignment', default=1.0),
+    residual_align_cosine_weight=Param(float, 'Weight for residual-to-rotated-residual cosine distance', default=1.0),
+    residual_align_detach_prefix_target=Param(int, 'Detach previous prefix target in residual-aligned MSE? (1/0)', default=1),
     nesting_start=Param(int, '2**i will be starting dimension for nesting', default=3),
     fixed_feature=Param(int, 'In case we want to do the fixed feature training, by default it is 2048', default=2048),
     t_orthogonal_mrl=Param(int, 'Use T-orthogonal transition MRL? (1/0)', default=0),
@@ -120,6 +127,7 @@ Section('training', 'training hyper param stuff').params(
     sampled_prefix_distribution=Param(And(str, OneOf(['uniform', 'inverse_dim', 'inverse_sqrt_dim'])), 'Sampled-prefix MRL distribution', default='uniform'),
     sampled_prefix_log_interval=Param(int, 'Sampled-prefix training log interval in batches', default=100),
     mrl_gradient_conflict_interval=Param(int, 'Measure MRL CE gradient conflict every N batches; 0 disables it', default=0),
+    residual_alignment_log_interval=Param(int, 'Log adjacent residual-prefix cosine distance every N batches; 0 disables it', default=100),
     mrl_conflict_gating=Param(int, 'Enable MRL conflict-gated feature gradients? (1/0)', default=0),
     mrl_conflict_mode=Param(And(str, OneOf(['none', 'block_cascade'])), 'MRL conflict-gating mode', default='none'),
     mrl_conflict_alpha=Param(float, 'MRL conflict projection strength', default=0.5),
@@ -210,6 +218,7 @@ class ImageNetTrainer:
     @param('model.mrl')
     @param('model.bidirectional_mrl')
     @param('model.suffix_balanced_mrl')
+    @param('model.residual_aligned_mrl')
     @param('model.t_orthogonal_mrl')
     @param('model.bor_mrl')
     @param('model.bor_block_mrl')
@@ -221,7 +230,7 @@ class ImageNetTrainer:
     @param('training.seed')
     @param('training.deterministic')
     def __init__(self, efficient, mrl, bidirectional_mrl, suffix_balanced_mrl,
-                 t_orthogonal_mrl,
+                 residual_aligned_mrl, t_orthogonal_mrl,
                  bor_mrl, bor_block_mrl,
                  cascade_stop_gradient_mrl, recursive_link_mrl,
                  nesting_start, fixed_feature,
@@ -235,6 +244,7 @@ class ImageNetTrainer:
         self.efficient = efficient
         self.bidirectional_mrl = bool(bidirectional_mrl)
         self.suffix_balanced_mrl = bool(suffix_balanced_mrl)
+        self.residual_aligned_mrl = bool(residual_aligned_mrl)
         self.t_orthogonal_mrl = bool(t_orthogonal_mrl)
         self.bor_mrl = bool(bor_mrl)
         self.bor_block_mrl = bool(bor_block_mrl)
@@ -243,6 +253,7 @@ class ImageNetTrainer:
         exclusive_mrl_variants = [
             self.bidirectional_mrl,
             self.suffix_balanced_mrl,
+            self.residual_aligned_mrl,
             self.t_orthogonal_mrl,
             self.bor_mrl,
             self.bor_block_mrl,
@@ -253,6 +264,7 @@ class ImageNetTrainer:
             raise ValueError(
                 "Choose only one custom MRL method: --model.bidirectional_mrl=1, "
                 "--model.suffix_balanced_mrl=1, "
+                "--model.residual_aligned_mrl=1, "
                 "--model.t_orthogonal_mrl=1, "
                 "--model.bor_mrl=1, --model.bor_block_mrl=1, "
                 "--model.cascade_stop_gradient_mrl=1, or "
@@ -594,6 +606,23 @@ class ImageNetTrainer:
         log_dict.update(self.sampled_prefix_counts_log_dict())
         return log_dict
 
+    def residual_prefix_alignment_log_dict(self):
+        if not self.nesting:
+            return {}
+
+        fc = self.get_fc_module()
+        prefixes = getattr(fc, 'last_prefixes', None)
+        if prefixes is None:
+            return {}
+
+        try:
+            return adjacent_residual_prefix_cosine_stats(prefixes, self.nesting_list)
+        except ValueError as exc:
+            if not getattr(self, '_warned_residual_alignment_skipped', False):
+                print(f"Residual-prefix alignment logging skipped: {exc}")
+                self._warned_residual_alignment_skipped = True
+            return {}
+
     def mrl_gradient_conflict_log_dict(self, output, target):
         if not self.nesting:
             return {}
@@ -720,6 +749,12 @@ class ImageNetTrainer:
     @param('model.pretrained')
     @param('training.use_blurpool') # Later Arguments for nesting/fixed_feat
     @param('model.suffix_balanced_include_full')
+    @param('model.residual_align_mode')
+    @param('model.residual_align_orthogonal_map')
+    @param('model.residual_align_use_trivialization')
+    @param('model.residual_align_mse_weight')
+    @param('model.residual_align_cosine_weight')
+    @param('model.residual_align_detach_prefix_target')
     @param('model.t_orthogonal_map')
     @param('model.bor_mode')
     @param('model.bor_orthogonal_map')
@@ -734,6 +769,12 @@ class ImageNetTrainer:
     @param('model.recursive_link_stop_gradient')
     def create_model_and_scaler(self, arch, pretrained, use_blurpool,
                                 suffix_balanced_include_full,
+                                residual_align_mode,
+                                residual_align_orthogonal_map,
+                                residual_align_use_trivialization,
+                                residual_align_mse_weight,
+                                residual_align_cosine_weight,
+                                residual_align_detach_prefix_target,
                                 t_orthogonal_map,
                                 bor_mode, bor_orthogonal_map, bor_use_trivialization,
                                 bor_stop_gradient, bor_residual_orthogonal,
@@ -765,6 +806,18 @@ class ImageNetTrainer:
             model.fc = BidirectionalMRLHead(
                 self.nesting_list,
                 num_classes=self.num_classes,
+            )
+        elif self.residual_aligned_mrl:
+            print("Creating classification layer of type :\t Residual-Aligned MRL")
+            model.fc = ResidualAlignedMRLHead(
+                self.nesting_list,
+                num_classes=self.num_classes,
+                mode=residual_align_mode,
+                orthogonal_map=residual_align_orthogonal_map,
+                use_trivialization=bool(residual_align_use_trivialization),
+                mse_weight=residual_align_mse_weight,
+                cosine_weight=residual_align_cosine_weight,
+                detach_prefix_target=bool(residual_align_detach_prefix_target),
             )
         elif self.t_orthogonal_mrl:
             print("Creating classification layer of type :\t T-Orthogonal MRL")
@@ -845,6 +898,7 @@ class ImageNetTrainer:
     @param('logging.log_level')
     @param('training.sampled_prefix_log_interval')
     @param('training.mrl_gradient_conflict_interval')
+    @param('training.residual_alignment_log_interval')
     @param('training.mrl_conflict_gating')
     @param('training.mrl_conflict_mode')
     @param('training.mrl_conflict_alpha')
@@ -856,7 +910,8 @@ class ImageNetTrainer:
     @param('training.procrustes_cascade_detach_teacher')
     @param('training.procrustes_cascade_max_svd_dim')
     def train_loop(self, epoch, log_level, sampled_prefix_log_interval,
-                   mrl_gradient_conflict_interval, mrl_conflict_gating,
+                   mrl_gradient_conflict_interval, residual_alignment_log_interval,
+                   mrl_conflict_gating,
                    mrl_conflict_mode, mrl_conflict_alpha, mrl_conflict_eps,
                    procrustes_cascade_distill, procrustes_cascade_weight,
                    procrustes_cascade_normalize, procrustes_cascade_center,
@@ -891,7 +946,8 @@ class ImageNetTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             gradient_conflict_log = {}
             pcd_step_log = {}
-            suffix_balanced_step_log = {}
+            auxiliary_step_log = {}
+            residual_alignment_step_log = {}
             should_measure_conflict = (
                 not conflict_gating_active and
                 self.nesting and
@@ -910,12 +966,21 @@ class ImageNetTrainer:
                     loss_train = self.loss(output, target)
                 fc = self.get_fc_module()
                 if hasattr(fc, "auxiliary_loss"):
-                    suffix_loss = fc.auxiliary_loss(target)
-                    loss_train = loss_train + suffix_loss
-                    suffix_balanced_step_log = {
-                        'suffix_balanced_loss': float(suffix_loss.detach().float().cpu().item()),
-                        'suffix_balanced_num_heads': int(getattr(fc, 'num_suffix_heads', 0)),
-                    }
+                    auxiliary_loss = fc.auxiliary_loss(target)
+                    loss_train = loss_train + auxiliary_loss
+                    if hasattr(fc, "auxiliary_log_dict"):
+                        auxiliary_step_log = fc.auxiliary_log_dict()
+                    else:
+                        auxiliary_step_log = {
+                            'suffix_balanced_loss': float(auxiliary_loss.detach().float().cpu().item()),
+                            'suffix_balanced_num_heads': int(getattr(fc, 'num_suffix_heads', 0)),
+                        }
+                if (
+                    self.nesting and
+                    residual_alignment_log_interval > 0 and
+                    (ix == 0 or (ix + 1) % residual_alignment_log_interval == 0)
+                ):
+                    residual_alignment_step_log = self.residual_prefix_alignment_log_dict()
                 if pcd_active:
                     prefixes = getattr(fc, 'last_prefixes', None)
                     if prefixes is not None:
@@ -975,13 +1040,20 @@ class ImageNetTrainer:
                         **pcd_log
                     })
 
-            if suffix_balanced_step_log and sampled_prefix_log_interval > 0:
+            if auxiliary_step_log and sampled_prefix_log_interval > 0:
                 if ix == 0 or (ix + 1) % sampled_prefix_log_interval == 0:
                     self.log({
                         'epoch': epoch,
                         'iter': ix,
-                        **suffix_balanced_step_log
+                        **auxiliary_step_log
                     })
+
+            if residual_alignment_step_log:
+                self.log({
+                    'epoch': epoch,
+                    'iter': ix,
+                    **residual_alignment_step_log
+                })
 
             should_log_conflict_gating = (
                 conflict_gating_log and
@@ -1016,9 +1088,13 @@ class ImageNetTrainer:
                     if pcd_step_log:
                         names += ['pcd']
                         values += [f'{pcd_step_log["pcd_loss"]:.3f}']
-                    if suffix_balanced_step_log:
-                        names += ['suffix']
-                        values += [f"{suffix_balanced_step_log['suffix_balanced_loss']:.3f}"]
+                    if auxiliary_step_log:
+                        if 'suffix_balanced_loss' in auxiliary_step_log:
+                            names += ['suffix']
+                            values += [f"{auxiliary_step_log['suffix_balanced_loss']:.3f}"]
+                        elif 'residual_aligned_mrl_loss' in auxiliary_step_log:
+                            names += ['ralign']
+                            values += [f"{auxiliary_step_log['residual_aligned_mrl_loss']:.3f}"]
 
                 msg = ', '.join(f'{n}={v}' for n, v in zip(names, values))
                 iterator.set_description(msg)

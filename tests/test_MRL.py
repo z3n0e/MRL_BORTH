@@ -15,8 +15,10 @@ from MRL import (
     MRL_Linear_Layer,
     OrthogonalTransitionLayer,
     RecursiveLinkMRLHead,
+    ResidualAlignedMRLHead,
     SuffixBalancedMRLHead,
     TOrthogonalMRLHead,
+    adjacent_residual_prefix_cosine_stats,
     block_cascade_conflict_gating,
     block_widths_from_nesting_list,
     mrl_block_cascade_filtered_feature_gradient,
@@ -480,6 +482,97 @@ def test_cascade_stop_gradient_mrl_head_output_shapes_and_prefixes():
 		assert torch.equal(prefix, x[:, :dim])
 	for logits in output:
 		assert logits.shape == (5, 10)
+
+
+def test_residual_aligned_mrl_head_output_shapes_and_auxiliary_loss():
+	head = ResidualAlignedMRLHead(
+		[8, 16, 32],
+		num_classes=10,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+	)
+	x = torch.randn(5, 32)
+
+	output = head(x)
+	aux = head.auxiliary_loss()
+	log_dict = head.auxiliary_log_dict()
+
+	assert isinstance(output, tuple)
+	assert len(output) == 3
+	assert [prefix.shape for prefix in head.last_prefixes] == [(5, 8), (5, 16), (5, 32)]
+	assert [residual.shape for residual in head.last_residuals] == [(5, 8), (5, 16)]
+	assert [rotated.shape for rotated in head.last_rotated_residuals] == [(5, 8), (5, 16)]
+	assert aux.dim() == 0
+	assert torch.isfinite(aux)
+	assert log_dict["residual_aligned_mrl_mse"] >= 0.0
+	assert log_dict["residual_aligned_mrl_cosine_distance"] >= 0.0
+	for logits in output:
+		assert logits.shape == (5, 10)
+
+
+def test_residual_aligned_mrl_requires_doubling_nesting():
+	with pytest.raises(ValueError):
+		ResidualAlignedMRLHead([8, 24], num_classes=10)
+
+
+def test_residual_aligned_mse_detaches_residual_input():
+	head = ResidualAlignedMRLHead(
+		[2, 4],
+		num_classes=3,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+		mse_weight=1.0,
+		cosine_weight=0.0,
+		detach_prefix_target=True,
+	)
+	x = torch.randn(5, 4, requires_grad=True)
+
+	head(x)
+	loss = head.auxiliary_loss()
+	loss.backward()
+
+	if x.grad is not None:
+		assert torch.allclose(x.grad, torch.zeros_like(x.grad))
+	assert any(
+		param.grad is not None
+		for layer in head.residual_orthogonal_layers
+		for param in layer.parameters()
+		if param.requires_grad
+	)
+
+
+def test_residual_aligned_cosine_loss_trains_residual_direct_branch():
+	head = ResidualAlignedMRLHead(
+		[2, 4],
+		num_classes=3,
+		mode="orthogonal",
+		orthogonal_map="matrix_exp",
+		mse_weight=0.0,
+		cosine_weight=1.0,
+		detach_prefix_target=True,
+	)
+	x = torch.randn(5, 4, requires_grad=True)
+
+	head(x)
+	loss = head.auxiliary_loss()
+	loss.backward()
+
+	assert x.grad is not None
+	assert torch.allclose(x.grad[:, :2], torch.zeros_like(x.grad[:, :2]))
+	assert x.grad[:, 2:].abs().sum() > 0
+
+
+def test_adjacent_residual_prefix_cosine_stats():
+	prefixes = [
+		torch.tensor([[1.0, 0.0]]),
+		torch.tensor([[1.0, 0.0, 0.0, 1.0]]),
+	]
+
+	stats = adjacent_residual_prefix_cosine_stats(prefixes, [2, 4])
+
+	assert stats["residual_prefix_alignment_pair_count"] == 1
+	assert stats["residual_prefix_cosine_4_vs_2"] == pytest.approx(0.0)
+	assert stats["residual_prefix_cosine_distance_4_vs_2"] == pytest.approx(1.0)
 
 
 def test_recursive_link_preserves_exact_prefixes():
