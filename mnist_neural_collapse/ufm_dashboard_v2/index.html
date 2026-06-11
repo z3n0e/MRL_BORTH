@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MRL-UFM Nested Neural Collapse Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="hero">
+    <div class="heroText">
+      <div class="eyebrow">Interactive research dashboard</div>
+      <h1>MRL-UFM Nested Neural Collapse</h1>
+      <p>Explore all UFM runs, VICReg ablations, Neural Collapse metrics, training dynamics, block usage, Gram matrices, and the original generated plots.</p>
+    </div>
+    <div class="heroStats" id="heroStats"></div>
+  </header>
+
+  <nav class="topNav">
+    <a href="#overview">Overview</a>
+    <a href="#final">Final geometry</a>
+    <a href="#animation">Training animation</a>
+    <a href="#blocks">Block usage</a>
+    <a href="#grams">Gram matrices</a>
+    <a href="#images">Images</a>
+    <a href="#tables">Raw data</a>
+  </nav>
+
+  <main class="page">
+    <section id="overview" class="section">
+      <div class="sectionTitle">
+        <h2>What the experiment shows</h2>
+        <p>The dashboard is organized around the main empirical claim: vanilla MRL-UFM reaches perfect classification but converges to a low-rank, rank-saturated nested geometry. Block-wise variance regularization reactivates dead coordinate blocks and recovers most of the NC geometry.</p>
+      </div>
+      <div class="storyGrid" id="storyCards"></div>
+      <div class="widePanel">
+        <h3>Method map</h3>
+        <div id="methodMap" class="methodMap"></div>
+      </div>
+    </section>
+
+    <section id="final" class="section dashboardGrid">
+      <aside class="controlPanel">
+        <h3>Controls</h3>
+        <label>Primary metric</label>
+        <select id="metricSelect"></select>
+        <label>Dimension</label>
+        <select id="dimSelect"></select>
+        <label>Methods</label>
+        <div id="methodChecks" class="checkList"></div>
+        <div class="btnRow">
+          <button id="coreBtn">Core</button>
+          <button id="allBtn">All</button>
+          <button id="clearBtn">Clear</button>
+        </div>
+        <div class="noteBox">
+          <b>Good NC geometry:</b> high effective rank near K−1, low ETF error, high NC3, high spherical margin. Accuracy alone is not sufficient.
+        </div>
+      </aside>
+      <div class="mainGrid">
+        <div class="panel big">
+          <div class="panelHead"><h3>Final metric across prefix dimensions</h3><span id="metricHelp"></span></div>
+          <canvas id="lineChart"></canvas>
+          <div id="lineLegend" class="legend"></div>
+        </div>
+        <div class="panel big">
+          <div class="panelHead"><h3>Method comparison at selected dimension</h3><span id="barHelp"></span></div>
+          <canvas id="barChart"></canvas>
+        </div>
+        <div class="panel full">
+          <div class="panelHead"><h3>Final d=32 evidence table</h3><span>sortable, high-level comparison</span></div>
+          <div id="evidenceTable" class="evidenceTable"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="animation" class="section">
+      <div class="sectionTitle"><h2>Training animation</h2><p>Watch each UFM run evolve from initialization to convergence. This makes the key difference visible: vanilla MRL moves toward rank saturation, while Block-Var preserves a high-rank NC-like geometry.</p></div>
+      <div class="animPanel">
+        <div class="animControls">
+          <label>Run<select id="animRun"></select></label>
+          <label>Dimension<select id="animDim"></select></label>
+          <label>Animated metric<select id="animMetric"></select></label>
+          <label>Speed<select id="animSpeed"><option value="1200">Slow</option><option value="700" selected>Normal</option><option value="350">Fast</option><option value="160">Very fast</option></select></label>
+          <button id="playBtn" class="primary">Play</button>
+          <button id="resetBtn">Reset</button>
+        </div>
+        <input id="epochSlider" type="range" min="0" max="0" value="0" />
+        <div class="animStatus"><span>Epoch <b id="epochNow">0</b></span><span>Frame <b id="frameNow">1 / 1</b></span><span>Final epoch <b id="epochFinal">0</b></span></div>
+        <div class="metricCards" id="animCards"></div>
+        <div class="animCharts">
+          <div class="panel"><h3>Metric trajectory</h3><canvas id="animMetricChart"></canvas><p id="animCaption" class="caption"></p></div>
+          <div class="panel"><h3>NC phase portrait</h3><canvas id="phaseChart"></canvas><p class="caption">x-axis: effective rank. y-axis: ETF error. Good full-dimensional NC moves toward high rank and low ETF error.</p></div>
+          <div class="panel"><h3>Rank vs NC3</h3><canvas id="rankNc3Chart"></canvas><p class="caption">Shows whether self-duality improves together with rank during training.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="blocks" class="section">
+      <div class="sectionTitle"><h2>Coordinate block usage</h2><p>These plots diagnose the concrete failure mode: late coordinate blocks collapse to almost zero variance/norm under vanilla MRL, while Block-Var activates them.</p></div>
+      <div class="splitGrid">
+        <div class="panel"><h3>Block standard deviation</h3><canvas id="blockStdChart"></canvas><div id="blockLegend" class="legend"></div></div>
+        <div class="panel"><h3>Block norm</h3><canvas id="blockNormChart"></canvas></div>
+        <div class="panel full"><h3>Per-coordinate standard deviation</h3><canvas id="coordStdChart"></canvas><p class="caption">Late coordinates are nearly zero in vanilla/cov-only MRL and active in Block-Var.</p></div>
+      </div>
+    </section>
+
+    <section id="grams" class="section">
+      <div class="sectionTitle"><h2>Gram matrix explorer</h2><p>Compare the class-mean Gram matrix of a selected MRL run against the independent single-scale optimum at the same dimension.</p></div>
+      <div class="gramControls">
+        <label>Run<select id="gramRun"></select></label>
+        <label>Dimension<select id="gramDim"></select></label>
+      </div>
+      <div class="gramGrid">
+        <div class="panel"><h3 id="gramTitleA">MRL Gram</h3><div id="gramA" class="heatmap"></div><p id="gramCapA" class="caption"></p></div>
+        <div class="panel"><h3>Single-scale Gram</h3><div id="gramB" class="heatmap"></div><p id="gramCapB" class="caption"></p></div>
+      </div>
+    </section>
+
+    <section id="images" class="section">
+      <div class="sectionTitle"><h2>Original generated plots</h2><p>All PNG plots from your experiment outputs are copied into the dashboard. Filter by run and category.</p></div>
+      <div class="imageControls">
+        <label>Run<select id="imgRun"></select></label>
+        <label>Category<select id="imgCat"></select></label>
+        <label>Search<input id="imgSearch" type="text" placeholder="e.g. nc3, gram, history, rank" /></label>
+      </div>
+      <div id="imageGallery" class="gallery"></div>
+    </section>
+
+    <section id="tables" class="section">
+      <div class="sectionTitle"><h2>Raw metric tables</h2><p>Search and inspect all final metrics, geometry gaps and configurations.</p></div>
+      <div class="tableControls"><input id="tableSearch" placeholder="Search method, metric, dimension..." /></div>
+      <div class="panel"><h3>Final metrics</h3><div id="finalTable" class="tableWrap"></div></div>
+      <div class="panel"><h3>Geometry gap MRL vs single</h3><div id="gapTable" class="tableWrap"></div></div>
+      <div class="panel"><h3>Run configurations</h3><div id="configTable" class="tableWrap"></div></div>
+    </section>
+  </main>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

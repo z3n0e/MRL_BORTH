@@ -6,3 +6,5 @@ __pycache__/
 data/
 cifar100_runs/
 imagenet_runs/
+mnist_neural_collapse/outputs
+mnist_neural_collapse/data
