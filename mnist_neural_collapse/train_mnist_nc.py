@@ -164,14 +164,110 @@ def batch_class_means(
     num_classes: int,
 ) -> torch.Tensor:
     """Differentiable class means for the classes present in a mini-batch."""
+    means, counts = batch_class_mean_table(features, labels, num_classes)
+    return means[counts > 0]
+
+
+def batch_class_mean_table(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    num_classes: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Differentiable class means [K, d] and counts [K] for a mini-batch."""
     d = features.shape[1]
     means = torch.zeros(num_classes, d, device=features.device, dtype=features.dtype)
     counts = torch.zeros(num_classes, device=features.device, dtype=features.dtype)
     means.index_add_(0, labels, features)
     counts.index_add_(0, labels, torch.ones_like(labels, dtype=features.dtype))
-    present = counts > 0
-    means = means[present] / counts[present].clamp_min(1.0).unsqueeze(1)
-    return means
+    means = means / counts.clamp_min(1.0).unsqueeze(1)
+    return means, counts
+
+
+class ClassMeanCache:
+    """Detached class means used as context for class-mean variance losses."""
+
+    def __init__(
+        self,
+        num_classes: int,
+        feature_dim: int,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+    ):
+        self.num_classes = num_classes
+        self.feature_dim = feature_dim
+        self.means = torch.zeros(num_classes, feature_dim, device=device, dtype=dtype)
+        self.initialized = torch.zeros(num_classes, device=device, dtype=torch.bool)
+
+    @torch.no_grad()
+    def update_from_batch(
+        self,
+        features: torch.Tensor,
+        labels: torch.Tensor,
+        momentum: float,
+    ) -> None:
+        means, counts = batch_class_mean_table(features.detach(), labels, self.num_classes)
+        present = counts > 0
+        if not bool(present.any().item()):
+            return
+
+        previous = self.means[present]
+        current = means[present].to(device=self.means.device, dtype=self.means.dtype)
+        already_initialized = self.initialized[present].unsqueeze(1)
+        blended = torch.where(
+            already_initialized,
+            momentum * previous + (1.0 - momentum) * current,
+            current,
+        )
+        self.means[present] = blended
+        self.initialized[present] = True
+
+    @torch.no_grad()
+    def set_from_full_dataset(self, means: torch.Tensor, counts: torch.Tensor) -> None:
+        present = counts > 0
+        self.means.zero_()
+        self.initialized.zero_()
+        if not bool(present.any().item()):
+            return
+        self.means[present] = means[present].to(device=self.means.device, dtype=self.means.dtype)
+        self.initialized[present] = True
+
+    def with_batch_updates(
+        self,
+        batch_means: torch.Tensor,
+        batch_counts: torch.Tensor,
+    ) -> torch.Tensor:
+        present = batch_counts > 0
+        available = present | self.initialized
+        cached = self.means.detach().to(device=batch_means.device, dtype=batch_means.dtype)
+        target = torch.where(present.unsqueeze(1), batch_means, cached)
+        return target[available]
+
+
+def class_mean_variance_target(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    args: argparse.Namespace,
+    class_mean_cache: ClassMeanCache | None,
+) -> torch.Tensor:
+    if args.vicreg_var_target == "features":
+        return features
+
+    batch_means, batch_counts = batch_class_mean_table(features, labels, args.num_classes)
+    if args.vicreg_var_target == "batch-class-means":
+        return batch_means[batch_counts > 0]
+
+    if class_mean_cache is None:
+        raise RuntimeError(f"{args.vicreg_var_target} requires a ClassMeanCache")
+    return class_mean_cache.with_batch_updates(batch_means, batch_counts)
+
+
+def prefix_block_bounds(prefix_dims: List[int]) -> List[Tuple[int, int, int]]:
+    out: List[Tuple[int, int, int]] = []
+    prev = 0
+    for d in prefix_dims:
+        out.append((d, prev, d))
+        prev = d
+    return out
 
 
 def vicreg_variance_loss(H: torch.Tensor, gamma: float, eps: float) -> torch.Tensor:
@@ -208,6 +304,7 @@ def mnist_loss_components(
     logits_by_dim: Dict[int, torch.Tensor],
     loss_weights: Dict[int, float],
     args: argparse.Namespace,
+    class_mean_cache: ClassMeanCache | None = None,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
     ce_total = features.sum() * 0.0
     var_loss = features.new_zeros(())
@@ -223,14 +320,23 @@ def mnist_loss_components(
         else:
             vicreg_target = batch_class_means(features, labels, args.num_classes)
 
-        for d in model.prefix_dims:
+        var_target = None
+        if args.vicreg_use_var:
+            var_target = class_mean_variance_target(features, labels, args, class_mean_cache)
+
+        for d, block_start, block_end in prefix_block_bounds(model.prefix_dims):
             weight = loss_weights[d]
-            Hm = vicreg_target[:, :d]
             if args.vicreg_use_var:
+                assert var_target is not None
+                if args.vicreg_var_scope == "prefix":
+                    H_var = var_target[:, :d]
+                else:
+                    H_var = var_target[:, block_start:block_end]
                 var_loss = var_loss + weight * vicreg_variance_loss(
-                    Hm, args.vicreg_gamma, args.vicreg_eps
+                    H_var, args.vicreg_gamma, args.vicreg_eps
                 )
             if args.vicreg_use_cov:
+                Hm = vicreg_target[:, :d]
                 cov_loss = cov_loss + weight * vicreg_covariance_loss(Hm)
 
         if args.vicreg_use_cross_cov:
@@ -258,6 +364,36 @@ def mnist_loss_components(
     return total, components
 
 
+@torch.no_grad()
+def refresh_full_dataset_class_means(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    class_mean_cache: ClassMeanCache,
+) -> None:
+    was_training = model.training
+    model.eval()
+    sums = torch.zeros(
+        class_mean_cache.num_classes,
+        class_mean_cache.feature_dim,
+        device=device,
+        dtype=class_mean_cache.means.dtype,
+    )
+    counts = torch.zeros(class_mean_cache.num_classes, device=device, dtype=class_mean_cache.means.dtype)
+
+    for x, y in tqdm(loader, desc="full class means", leave=False):
+        x = x.to(device, non_blocking=True)
+        y = y.to(device, non_blocking=True)
+        z = model.features(x).to(dtype=class_mean_cache.means.dtype)
+        sums.index_add_(0, y, z)
+        counts.index_add_(0, y, torch.ones_like(y, dtype=class_mean_cache.means.dtype))
+
+    means = sums / counts.clamp_min(1.0).unsqueeze(1)
+    class_mean_cache.set_from_full_dataset(means, counts)
+    if was_training:
+        model.train()
+
+
 def train_one_epoch(
     model: nn.Module,
     loader: DataLoader,
@@ -265,6 +401,7 @@ def train_one_epoch(
     device: torch.device,
     loss_weights: Dict[int, float],
     args: argparse.Namespace,
+    class_mean_cache: ClassMeanCache | None = None,
 ) -> Dict[str, float]:
     model.train()
     total_loss = 0.0
@@ -280,9 +417,14 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
         z = model.encoder(x)
         logits_by_dim = model.logits_from_features(z)
-        loss, components = mnist_loss_components(model, z, y, logits_by_dim, loss_weights, args)
+        loss, components = mnist_loss_components(
+            model, z, y, logits_by_dim, loss_weights, args, class_mean_cache
+        )
         loss.backward()
         optimizer.step()
+        if args.vicreg_use_var and args.vicreg_var_target == "ema-class-means":
+            assert class_mean_cache is not None
+            class_mean_cache.update_from_batch(z, y, args.class_mean_ema_momentum)
 
         bs = y.numel()
         total_seen += bs
@@ -353,6 +495,8 @@ def evaluate_nc(
     loss_weights: Dict[int, float],
     vicreg_name: str,
     vicreg_target: str,
+    vicreg_var_target: str,
+    vicreg_var_scope: str,
     train_stats: Dict[str, float] | None = None,
 ) -> List[Dict[str, float | int | str]]:
     features, labels, logits_by_dim, loss_by_dim, acc_by_dim = collect_features_and_logits(model, loader, device)
@@ -384,6 +528,8 @@ def evaluate_nc(
             "mrl_loss_weight": loss_weights[d],
             "vicreg": vicreg_name,
             "vicreg_target": vicreg_target,
+            "vicreg_var_target": vicreg_var_target,
+            "vicreg_var_scope": vicreg_var_scope,
         }
         for key in TRAIN_COMPONENT_KEYS:
             row[key] = train_stats.get(key, nan)
@@ -474,9 +620,48 @@ def main() -> None:
         default="features",
         choices=("class-means", "features"),
         help=(
-            "regularize raw batch features, matching original VICReg; "
-            "class-means is only a UFM-prototype ablation"
+            "target for covariance and cross-covariance terms; "
+            "variance uses --vicreg-var-target"
         ),
+    )
+    parser.add_argument(
+        "--vicreg-var-target",
+        type=str,
+        default="batch-class-means",
+        choices=(
+            "features",
+            "class-means",
+            "batch-class-means",
+            "ema-class-means",
+            "full-class-means",
+        ),
+        help=(
+            "target for the VICReg variance term. class-means is an alias for "
+            "batch-class-means; use features with --vicreg-var-scope prefix "
+            "to reproduce the old raw-feature behavior"
+        ),
+    )
+    parser.add_argument(
+        "--vicreg-var-scope",
+        type=str,
+        default="block",
+        choices=("block", "prefix"),
+        help=(
+            "apply the variance floor to each newly added MRL block, or to each "
+            "full prefix"
+        ),
+    )
+    parser.add_argument(
+        "--class-mean-ema-momentum",
+        type=float,
+        default=0.95,
+        help="EMA momentum when --vicreg-var-target ema-class-means",
+    )
+    parser.add_argument(
+        "--full-class-means-every",
+        type=int,
+        default=1,
+        help="refresh cadence in epochs when --vicreg-var-target full-class-means",
     )
     parser.add_argument(
         "--vicreg-var-weight",
@@ -520,6 +705,12 @@ def main() -> None:
     args.loss_weight_by_dim = dict(zip(prefix_dims, args.loss_weight_values))
     if not any(v > 0 for v in args.loss_weight_values):
         raise ValueError("at least one loss weight must be positive")
+    if args.vicreg_var_target == "class-means":
+        args.vicreg_var_target = "batch-class-means"
+    if not 0.0 <= args.class_mean_ema_momentum < 1.0:
+        raise ValueError("class-mean-ema-momentum must be in [0, 1)")
+    if args.full_class_means_every <= 0:
+        raise ValueError("full-class-means-every must be positive")
     if args.vicreg_var_weight < 0:
         raise ValueError("vicreg-var-weight must be non-negative")
     if args.vicreg_cov_weight < 0:
@@ -564,6 +755,12 @@ def main() -> None:
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     loss_weights = {d: float(v) for d, v in zip(model.prefix_dims, args.loss_weight_values)}
+    class_mean_cache = None
+    if args.vicreg_use_var and args.vicreg_var_target in {
+        "ema-class-means",
+        "full-class-means",
+    }:
+        class_mean_cache = ClassMeanCache(args.num_classes, args.feature_dim, device)
 
     csv_path = out_dir / "metrics.csv"
     best_test_acc = -1.0
@@ -581,6 +778,8 @@ def main() -> None:
         loss_weights,
         args.vicreg,
         args.vicreg_target,
+        args.vicreg_var_target,
+        args.vicreg_var_scope,
     )
     if not args.no_test_eval:
         rows += evaluate_nc(
@@ -595,11 +794,20 @@ def main() -> None:
             loss_weights,
             args.vicreg,
             args.vicreg_target,
+            args.vicreg_var_target,
+            args.vicreg_var_scope,
         )
     append_rows(csv_path, rows)
 
     for epoch in range(1, args.epochs + 1):
-        train_stats = train_one_epoch(model, train_loader, optimizer, device, loss_weights, args)
+        if args.vicreg_use_var and args.vicreg_var_target == "full-class-means":
+            assert class_mean_cache is not None
+            if epoch == 1 or (epoch - 1) % args.full_class_means_every == 0:
+                refresh_full_dataset_class_means(model, eval_train_loader, device, class_mean_cache)
+
+        train_stats = train_one_epoch(
+            model, train_loader, optimizer, device, loss_weights, args, class_mean_cache
+        )
         scheduler.step()
 
         if epoch % args.eval_every == 0 or epoch == args.epochs:
@@ -619,6 +827,8 @@ def main() -> None:
                 loss_weights,
                 args.vicreg,
                 args.vicreg_target,
+                args.vicreg_var_target,
+                args.vicreg_var_scope,
                 train_stats,
             )
             if not args.no_test_eval:
@@ -634,6 +844,8 @@ def main() -> None:
                     loss_weights,
                     args.vicreg,
                     args.vicreg_target,
+                    args.vicreg_var_target,
+                    args.vicreg_var_scope,
                     train_stats,
                 )
             append_rows(csv_path, rows)
