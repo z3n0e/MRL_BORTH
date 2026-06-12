@@ -272,6 +272,51 @@ def prefix_block_bounds(prefix_dims: List[int]) -> List[Tuple[int, int, int]]:
     return out
 
 
+def mask_previous_prefix_features(
+    H: torch.Tensor,
+    previous_dim: int,
+    mask_prob: float,
+    scale: str,
+) -> torch.Tensor:
+    if previous_dim <= 0 or mask_prob <= 0:
+        return H
+
+    H_masked = H.clone()
+    keep = torch.rand(
+        H.shape[0],
+        previous_dim,
+        device=H.device,
+    ) >= mask_prob
+    mask = keep.to(dtype=H.dtype)
+    if scale == "inverted":
+        mask = mask / (1.0 - mask_prob)
+    H_masked[:, :previous_dim] = H_masked[:, :previous_dim] * mask
+    return H_masked
+
+
+def training_logits_from_features(
+    model: nn.Module,
+    features: torch.Tensor,
+    args: argparse.Namespace,
+) -> Dict[int, torch.Tensor]:
+    if args.prefix_mask_prob <= 0 or len(model.prefix_dims) <= 1:
+        return model.logits_from_features(features)
+    if not hasattr(model, "heads"):
+        return model.logits_from_features(features)
+
+    logits: Dict[int, torch.Tensor] = {}
+    for d, previous_dim, _ in prefix_block_bounds(model.prefix_dims):
+        H = features[:, :d]
+        H = mask_previous_prefix_features(
+            H,
+            previous_dim,
+            args.prefix_mask_prob,
+            args.prefix_mask_scale,
+        )
+        logits[d] = model.heads[str(d)](H)
+    return logits
+
+
 def vicreg_variance_loss(H: torch.Tensor, gamma: float, eps: float) -> torch.Tensor:
     if H.shape[0] <= 1:
         return H.new_zeros(())
@@ -461,7 +506,7 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
         z = model.encoder(x)
-        logits_by_dim = model.logits_from_features(z)
+        logits_by_dim = training_logits_from_features(model, z, args)
         loss, components = mnist_loss_components(
             model, z, y, logits_by_dim, loss_weights, args, class_mean_cache
         )
@@ -547,6 +592,8 @@ def evaluate_nc(
     supcon_weight: float,
     supcon_temperature: float,
     supcon_scope: str,
+    prefix_mask_prob: float,
+    prefix_mask_scale: str,
     train_stats: Dict[str, float] | None = None,
 ) -> List[Dict[str, float | int | str]]:
     features, labels, logits_by_dim, loss_by_dim, acc_by_dim = collect_features_and_logits(model, loader, device)
@@ -583,6 +630,8 @@ def evaluate_nc(
             "supcon_weight": supcon_weight,
             "supcon_temperature": supcon_temperature,
             "supcon_scope": supcon_scope,
+            "prefix_mask_prob": prefix_mask_prob,
+            "prefix_mask_scale": prefix_mask_scale,
         }
         for key in TRAIN_COMPONENT_KEYS:
             row[key] = train_stats.get(key, nan)
@@ -653,6 +702,22 @@ def main() -> None:
     parser.add_argument("--momentum", type=float, default=0.9)
     parser.add_argument("--weight-decay", type=float, default=5e-4)
     parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument(
+        "--prefix-mask-prob",
+        type=float,
+        default=0.0,
+        help=(
+            "training-only probability of masking inherited coordinates "
+            "inside the previous prefix for larger MRL heads"
+        ),
+    )
+    parser.add_argument(
+        "--prefix-mask-scale",
+        type=str,
+        default="inverted",
+        choices=("inverted", "none"),
+        help="whether to use inverted-dropout scaling for prefix masking",
+    )
     parser.add_argument("--eval-every", type=int, default=2)
     parser.add_argument("--data-dir", type=str, default="data")
     parser.add_argument("--out-dir", type=str, default="outputs/run")
@@ -783,6 +848,8 @@ def main() -> None:
     args.loss_weight_by_dim = dict(zip(prefix_dims, args.loss_weight_values))
     if not any(v > 0 for v in args.loss_weight_values):
         raise ValueError("at least one loss weight must be positive")
+    if not 0.0 <= args.prefix_mask_prob < 1.0:
+        raise ValueError("prefix-mask-prob must be in [0, 1)")
     if args.vicreg_var_target == "class-means":
         args.vicreg_var_target = "batch-class-means"
     if not 0.0 <= args.class_mean_ema_momentum < 1.0:
@@ -867,6 +934,8 @@ def main() -> None:
         args.supcon_weight,
         args.supcon_temperature,
         args.supcon_scope,
+        args.prefix_mask_prob,
+        args.prefix_mask_scale,
     )
     if not args.no_test_eval:
         rows += evaluate_nc(
@@ -886,6 +955,8 @@ def main() -> None:
             args.supcon_weight,
             args.supcon_temperature,
             args.supcon_scope,
+            args.prefix_mask_prob,
+            args.prefix_mask_scale,
         )
     append_rows(csv_path, rows)
 
@@ -924,6 +995,8 @@ def main() -> None:
                 args.supcon_weight,
                 args.supcon_temperature,
                 args.supcon_scope,
+                args.prefix_mask_prob,
+                args.prefix_mask_scale,
                 train_stats,
             )
             if not args.no_test_eval:
@@ -944,6 +1017,8 @@ def main() -> None:
                     args.supcon_weight,
                     args.supcon_temperature,
                     args.supcon_scope,
+                    args.prefix_mask_prob,
+                    args.prefix_mask_scale,
                     train_stats,
                 )
             append_rows(csv_path, rows)

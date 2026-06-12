@@ -112,6 +112,21 @@ Valid `--vicreg` presets are `none`, `var-only`, `cov-only`, `var-cov`, and `var
 `--vicreg-target` still controls the covariance and cross-covariance targets (`features` by default, or `class-means` for a UFM-prototype proxy ablation).
 For these runs, `train_loss` is logged as weighted CE plus the active auxiliary losses. Weight regularization stays in the optimizer via `--weight-decay`; `loss` in `metrics.csv` remains the evaluated sample cross-entropy for that split/prefix.
 
+MRL training also supports inherited-prefix masking. With `--prefix-mask-prob p`, every larger prefix head is trained on a randomly masked view of the coordinates inherited from the immediately previous prefix; the new block remains unmasked. This is training-only, so evaluation still uses the full prefix:
+
+```bash
+python train_mnist_nc.py \
+  --mode mrl \
+  --feature-dim 32 \
+  --prefix-dims 2,4,8,16,32 \
+  --loss-weights uniform \
+  --prefix-mask-prob 0.25 \
+  --epochs 80 \
+  --out-dir outputs/mnist_mrl_prefix_mask
+```
+
+By default the mask uses inverted-dropout scaling. Use `--prefix-mask-scale none` to zero masked coordinates without rescaling the survivors.
+
 To use supervised contrastive loss instead of VICReg:
 
 ```bash
