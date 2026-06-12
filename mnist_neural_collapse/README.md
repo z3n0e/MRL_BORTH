@@ -95,7 +95,7 @@ The MNIST MRL trainer supports the same loss-weight ablation names as the UFM sc
 - `only-large`
 - `only-small+big`
 
-It also supports VICReg-style regularizers on per-sample batch features, which is the correct target for the original VICReg representation regularizer:
+It also supports auxiliary geometry regularizers, including VICReg-style losses and supervised contrastive loss:
 
 ```bash
 python train_mnist_nc.py \
@@ -110,7 +110,24 @@ python train_mnist_nc.py \
 
 Valid `--vicreg` presets are `none`, `var-only`, `cov-only`, `var-cov`, and `var-cov-cross-cov`. The variance term now defaults to class-mean Block-Var: it computes the variance floor on mini-batch class means for each newly added MRL block. Use `--vicreg-var-target ema-class-means` for EMA class means, or `--vicreg-var-target full-class-means --full-class-means-every N` to refresh train-set class means every `N` epochs. To reproduce the old raw-feature variance term, use `--vicreg-var-target features --vicreg-var-scope prefix`.
 `--vicreg-target` still controls the covariance and cross-covariance targets (`features` by default, or `class-means` for a UFM-prototype proxy ablation).
-For these runs, `train_loss` is logged as weighted CE plus VICReg. Weight regularization stays in the optimizer via `--weight-decay`; `loss` in `metrics.csv` remains the evaluated sample cross-entropy for that split/prefix.
+For these runs, `train_loss` is logged as weighted CE plus the active auxiliary losses. Weight regularization stays in the optimizer via `--weight-decay`; `loss` in `metrics.csv` remains the evaluated sample cross-entropy for that split/prefix.
+
+To use supervised contrastive loss instead of VICReg:
+
+```bash
+python train_mnist_nc.py \
+  --mode mrl \
+  --feature-dim 32 \
+  --prefix-dims 2,4,8,16,32 \
+  --loss-weights uniform \
+  --vicreg none \
+  --supcon-weight 1.0 \
+  --supcon-temperature 0.1 \
+  --epochs 80 \
+  --out-dir outputs/mnist_mrl_supcon
+```
+
+By default SupCon is applied to every full prefix. Use `--supcon-scope block` to apply it only to each newly added MRL block.
 
 To run the standard MNIST MRL ablation sweep:
 

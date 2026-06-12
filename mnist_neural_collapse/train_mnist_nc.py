@@ -44,6 +44,8 @@ TRAIN_COMPONENT_KEYS = [
     "vicreg_cov_loss",
     "vicreg_cross_cov_loss",
     "vicreg_total_loss",
+    "supcon_loss",
+    "supcon_total_loss",
     "train_loss",
 ]
 
@@ -297,6 +299,35 @@ def vicreg_cross_covariance_loss(H_left: torch.Tensor, H_right: torch.Tensor) ->
     return cross_cov.pow(2).mean()
 
 
+def supervised_contrastive_loss(
+    H: torch.Tensor,
+    labels: torch.Tensor,
+    temperature: float,
+    eps: float,
+) -> torch.Tensor:
+    """Supervised contrastive loss over one mini-batch embedding matrix."""
+    n = H.shape[0]
+    if n <= 1 or H.shape[1] == 0:
+        return H.new_zeros(())
+
+    z = F.normalize(H, dim=1, eps=eps)
+    logits = (z @ z.T) / temperature
+    self_mask = torch.eye(n, dtype=torch.bool, device=H.device)
+    logits = logits.masked_fill(self_mask, -float("inf"))
+    logits = logits - logits.max(dim=1, keepdim=True).values.detach()
+
+    positive_mask = labels.unsqueeze(0).eq(labels.unsqueeze(1)) & ~self_mask
+    positive_counts = positive_mask.sum(dim=1)
+    valid = positive_counts > 0
+    if not bool(valid.any().item()):
+        return H.new_zeros(())
+
+    log_prob = logits - torch.logsumexp(logits, dim=1, keepdim=True)
+    log_prob_pos = log_prob.masked_fill(~positive_mask, 0.0).sum(dim=1)
+    mean_log_prob_pos = log_prob_pos / positive_counts.clamp_min(1)
+    return -mean_log_prob_pos[valid].mean()
+
+
 def mnist_loss_components(
     model: nn.Module,
     features: torch.Tensor,
@@ -310,6 +341,7 @@ def mnist_loss_components(
     var_loss = features.new_zeros(())
     cov_loss = features.new_zeros(())
     cross_cov_loss = features.new_zeros(())
+    supcon_loss = features.new_zeros(())
 
     for d, logits in logits_by_dim.items():
         ce_total = ce_total + loss_weights[d] * F.cross_entropy(logits, labels)
@@ -347,18 +379,31 @@ def mnist_loss_components(
                     H_left, H_right
                 )
 
+    if args.supcon_weight > 0:
+        for d, block_start, block_end in prefix_block_bounds(model.prefix_dims):
+            if args.supcon_scope == "prefix":
+                H_supcon = features[:, :d]
+            else:
+                H_supcon = features[:, block_start:block_end]
+            supcon_loss = supcon_loss + loss_weights[d] * supervised_contrastive_loss(
+                H_supcon, labels, args.supcon_temperature, args.supcon_eps
+            )
+
     vicreg_total = (
         args.vicreg_var_weight * var_loss
         + args.vicreg_cov_weight * cov_loss
         + args.vicreg_cross_cov_weight * cross_cov_loss
     )
-    total = ce_total + vicreg_total
+    supcon_total = args.supcon_weight * supcon_loss
+    total = ce_total + vicreg_total + supcon_total
     components = {
         "mrl_ce_total": ce_total,
         "vicreg_var_loss": var_loss,
         "vicreg_cov_loss": cov_loss,
         "vicreg_cross_cov_loss": cross_cov_loss,
         "vicreg_total_loss": vicreg_total,
+        "supcon_loss": supcon_loss,
+        "supcon_total_loss": supcon_total,
         "train_loss": total,
     }
     return total, components
@@ -436,6 +481,8 @@ def train_one_epoch(
         postfix = {"loss": total_loss / max(total_seen, 1)}
         if args.vicreg != "none":
             postfix["vicreg"] = component_sums["vicreg_total_loss"] / max(total_seen, 1)
+        if args.supcon_weight > 0:
+            postfix["supcon"] = component_sums["supcon_total_loss"] / max(total_seen, 1)
         pbar.set_postfix(**postfix)
 
     out = {"loss": total_loss / total_seen}
@@ -497,6 +544,9 @@ def evaluate_nc(
     vicreg_target: str,
     vicreg_var_target: str,
     vicreg_var_scope: str,
+    supcon_weight: float,
+    supcon_temperature: float,
+    supcon_scope: str,
     train_stats: Dict[str, float] | None = None,
 ) -> List[Dict[str, float | int | str]]:
     features, labels, logits_by_dim, loss_by_dim, acc_by_dim = collect_features_and_logits(model, loader, device)
@@ -530,6 +580,9 @@ def evaluate_nc(
             "vicreg_target": vicreg_target,
             "vicreg_var_target": vicreg_var_target,
             "vicreg_var_scope": vicreg_var_scope,
+            "supcon_weight": supcon_weight,
+            "supcon_temperature": supcon_temperature,
+            "supcon_scope": supcon_scope,
         }
         for key in TRAIN_COMPONENT_KEYS:
             row[key] = train_stats.get(key, nan)
@@ -693,6 +746,31 @@ def main() -> None:
         default=1e-4,
         help="epsilon inside the VICReg variance standard deviation",
     )
+    parser.add_argument(
+        "--supcon-weight",
+        type=float,
+        default=0.0,
+        help="coefficient for supervised contrastive loss; use with --vicreg none as a VICReg alternative",
+    )
+    parser.add_argument(
+        "--supcon-temperature",
+        type=float,
+        default=0.1,
+        help="temperature for supervised contrastive loss",
+    )
+    parser.add_argument(
+        "--supcon-scope",
+        type=str,
+        default="prefix",
+        choices=("prefix", "block"),
+        help="apply SupCon to each full prefix or to each newly added MRL block",
+    )
+    parser.add_argument(
+        "--supcon-eps",
+        type=float,
+        default=1e-12,
+        help="epsilon used when normalizing features for supervised contrastive loss",
+    )
     args = parser.parse_args()
 
     prefix_dims = parse_prefix_dims(args.prefix_dims, args.feature_dim)
@@ -721,6 +799,12 @@ def main() -> None:
         raise ValueError("vicreg-gamma must be non-negative")
     if args.vicreg_eps <= 0:
         raise ValueError("vicreg-eps must be positive")
+    if args.supcon_weight < 0:
+        raise ValueError("supcon-weight must be non-negative")
+    if args.supcon_temperature <= 0:
+        raise ValueError("supcon-temperature must be positive")
+    if args.supcon_eps <= 0:
+        raise ValueError("supcon-eps must be positive")
     args.vicreg_use_var, args.vicreg_use_cov, args.vicreg_use_cross_cov = VICREG_PRESETS[
         args.vicreg
     ]
@@ -780,6 +864,9 @@ def main() -> None:
         args.vicreg_target,
         args.vicreg_var_target,
         args.vicreg_var_scope,
+        args.supcon_weight,
+        args.supcon_temperature,
+        args.supcon_scope,
     )
     if not args.no_test_eval:
         rows += evaluate_nc(
@@ -796,6 +883,9 @@ def main() -> None:
             args.vicreg_target,
             args.vicreg_var_target,
             args.vicreg_var_scope,
+            args.supcon_weight,
+            args.supcon_temperature,
+            args.supcon_scope,
         )
     append_rows(csv_path, rows)
 
@@ -811,10 +901,12 @@ def main() -> None:
         scheduler.step()
 
         if epoch % args.eval_every == 0 or epoch == args.epochs:
-            print(
-                f"Epoch {epoch:03d} | train loss {train_stats['loss']:.4f} "
-                f"| vicreg {train_stats['vicreg_total_loss']:.4f}"
-            )
+            parts = [f"Epoch {epoch:03d}", f"train loss {train_stats['loss']:.4f}"]
+            if args.vicreg != "none":
+                parts.append(f"vicreg {train_stats['vicreg_total_loss']:.4f}")
+            if args.supcon_weight > 0:
+                parts.append(f"supcon {train_stats['supcon_total_loss']:.4f}")
+            print(" | ".join(parts))
             rows = evaluate_nc(
                 model,
                 eval_train_loader,
@@ -829,6 +921,9 @@ def main() -> None:
                 args.vicreg_target,
                 args.vicreg_var_target,
                 args.vicreg_var_scope,
+                args.supcon_weight,
+                args.supcon_temperature,
+                args.supcon_scope,
                 train_stats,
             )
             if not args.no_test_eval:
@@ -846,6 +941,9 @@ def main() -> None:
                     args.vicreg_target,
                     args.vicreg_var_target,
                     args.vicreg_var_scope,
+                    args.supcon_weight,
+                    args.supcon_temperature,
+                    args.supcon_scope,
                     train_stats,
                 )
             append_rows(csv_path, rows)
