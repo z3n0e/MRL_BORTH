@@ -8,13 +8,11 @@ set -euo pipefail
 
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# Reproducibility knobs.
 SEED=${SEED:-0}
 DETERMINISTIC=${DETERMINISTIC:-1}
 export PYTHONHASHSEED="$SEED"
 export CUBLAS_WORKSPACE_CONFIG=${CUBLAS_WORKSPACE_CONFIG:-:4096:8}
 
-# Data/output locations.
 IMAGENET_DIR=${IMAGENET_DIR:-}
 EXPERIMENT_DIR=${EXPERIMENT_DIR:-"$ROOT_DIR/imagenet_runs/imagenet_seed_${SEED}_$(date +%Y%m%d_%H%M%S)"}
 
@@ -31,7 +29,6 @@ if [[ ! -d "$IMAGENET_DIR/train" || ! -d "$IMAGENET_DIR/val" ]]; then
     exit 1
 fi
 
-# Training knobs.
 PYTHON=${PYTHON:-python}
 EPOCHS=${EPOCHS:-40}
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-1024}
@@ -39,30 +36,12 @@ VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-512}
 NUM_WORKERS=${NUM_WORKERS:-12}
 EVAL_WORKERS=${EVAL_WORKERS:-12}
 
-# MRL loss/probe knobs.
 MRL_LOSS_MODE=${MRL_LOSS_MODE:-all}
 SAMPLED_PREFIX_DISTRIBUTION=${SAMPLED_PREFIX_DISTRIBUTION:-uniform}
 SAMPLED_PREFIX_LOG_INTERVAL=${SAMPLED_PREFIX_LOG_INTERVAL:-100}
-MRL_GRADIENT_CONFLICT_INTERVAL=${MRL_GRADIENT_CONFLICT_INTERVAL:-0}
-RESIDUAL_ALIGNMENT_LOG_INTERVAL=${RESIDUAL_ALIGNMENT_LOG_INTERVAL:-100}
-MRL_CONFLICT_GATING=${MRL_CONFLICT_GATING:-0}
-MRL_CONFLICT_MODE=${MRL_CONFLICT_MODE:-none}
-MRL_CONFLICT_ALPHA=${MRL_CONFLICT_ALPHA:-0.5}
-MRL_CONFLICT_EPS=${MRL_CONFLICT_EPS:-1e-8}
-
-# Method toggles. These scripts compare only MRL and Residual-Aligned MRL.
-RUN_MRL=${RUN_MRL:-1}
-RUN_RESIDUAL_ALIGNED_MRL=${RUN_RESIDUAL_ALIGNED_MRL:-1}
+PREFIX_MASK_PROB=${PREFIX_MASK_PROB:-0.0}
+PREFIX_MASK_SCALE=${PREFIX_MASK_SCALE:-inverted}
 RUN_RETRIEVAL_METRICS=${RUN_RETRIEVAL_METRICS:-1}
-
-# Residual-Aligned MRL knobs.
-RESIDUAL_ALIGN_MODE=${RESIDUAL_ALIGN_MODE:-orthogonal}
-RESIDUAL_ALIGN_ORTHOGONAL_MAP=${RESIDUAL_ALIGN_ORTHOGONAL_MAP:-matrix_exp}
-RESIDUAL_ALIGN_USE_TRIVIALIZATION=${RESIDUAL_ALIGN_USE_TRIVIALIZATION:-1}
-RESIDUAL_ALIGN_MSE_WEIGHT=${RESIDUAL_ALIGN_MSE_WEIGHT:-10.0}
-RESIDUAL_ALIGN_COSINE_WEIGHT=${RESIDUAL_ALIGN_COSINE_WEIGHT:-10.0}
-RESIDUAL_ALIGN_DETACH_PREFIX_TARGET=${RESIDUAL_ALIGN_DETACH_PREFIX_TARGET:-1}
-RESIDUAL_INTERPOLATION_ALPHA=${RESIDUAL_INTERPOLATION_ALPHA:-0.5}
 
 TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
 EVAL_DIR="$EXPERIMENT_DIR/eval"
@@ -74,49 +53,17 @@ echo "ImageNet experiment directory: $EXPERIMENT_DIR"
 echo "Seed: $SEED"
 echo "Deterministic: $DETERMINISTIC"
 echo "ImageNet data root: $IMAGENET_DIR"
-echo "Run MRL: $RUN_MRL"
-echo "Run Residual-Aligned MRL: $RUN_RESIDUAL_ALIGNED_MRL"
 echo "MRL loss mode: $MRL_LOSS_MODE"
-echo "Residual alignment log interval: $RESIDUAL_ALIGNMENT_LOG_INTERVAL"
-echo "Residual-Aligned MRL orthogonal map: $RESIDUAL_ALIGN_ORTHOGONAL_MAP"
-echo "Residual-Aligned MRL MSE weight: $RESIDUAL_ALIGN_MSE_WEIGHT"
-echo "Residual-Aligned MRL cosine weight: $RESIDUAL_ALIGN_COSINE_WEIGHT"
-echo "Residual interpolation alpha: $RESIDUAL_INTERPOLATION_ALPHA"
+echo "Prefix mask probability: $PREFIX_MASK_PROB"
+echo "Prefix mask scale: $PREFIX_MASK_SCALE"
 echo "Run retrieval metrics: $RUN_RETRIEVAL_METRICS"
 
 MRL_TRAINING_ARGS=(
     --training.mrl_loss_mode="$MRL_LOSS_MODE"
     --training.sampled_prefix_distribution="$SAMPLED_PREFIX_DISTRIBUTION"
     --training.sampled_prefix_log_interval="$SAMPLED_PREFIX_LOG_INTERVAL"
-    --training.mrl_gradient_conflict_interval="$MRL_GRADIENT_CONFLICT_INTERVAL"
-    --training.residual_alignment_log_interval="$RESIDUAL_ALIGNMENT_LOG_INTERVAL"
-)
-
-MRL_CONFLICT_TRAINING_ARGS=(
-    --training.mrl_conflict_gating="$MRL_CONFLICT_GATING"
-    --training.mrl_conflict_mode="$MRL_CONFLICT_MODE"
-    --training.mrl_conflict_alpha="$MRL_CONFLICT_ALPHA"
-    --training.mrl_conflict_eps="$MRL_CONFLICT_EPS"
-)
-
-RESIDUAL_ALIGNED_TRAINING_ARGS=(
-    --model.residual_aligned_mrl=1
-    --model.residual_align_mode="$RESIDUAL_ALIGN_MODE"
-    --model.residual_align_orthogonal_map="$RESIDUAL_ALIGN_ORTHOGONAL_MAP"
-    --model.residual_align_use_trivialization="$RESIDUAL_ALIGN_USE_TRIVIALIZATION"
-    --model.residual_align_mse_weight="$RESIDUAL_ALIGN_MSE_WEIGHT"
-    --model.residual_align_cosine_weight="$RESIDUAL_ALIGN_COSINE_WEIGHT"
-    --model.residual_align_detach_prefix_target="$RESIDUAL_ALIGN_DETACH_PREFIX_TARGET"
-)
-
-RESIDUAL_ALIGNED_EVAL_ARGS=(
-    --residual_aligned_mrl
-    --residual_align_mode "$RESIDUAL_ALIGN_MODE"
-    --residual_align_orthogonal_map "$RESIDUAL_ALIGN_ORTHOGONAL_MAP"
-    --residual_align_use_trivialization "$RESIDUAL_ALIGN_USE_TRIVIALIZATION"
-    --residual_align_mse_weight "$RESIDUAL_ALIGN_MSE_WEIGHT"
-    --residual_align_cosine_weight "$RESIDUAL_ALIGN_COSINE_WEIGHT"
-    --residual_align_detach_prefix_target "$RESIDUAL_ALIGN_DETACH_PREFIX_TARGET"
+    --model.prefix_mask_prob="$PREFIX_MASK_PROB"
+    --model.prefix_mask_scale="$PREFIX_MASK_SCALE"
 )
 
 write_manifest() {
@@ -134,29 +81,14 @@ write_manifest() {
         echo "mrl_loss_mode=$MRL_LOSS_MODE"
         echo "sampled_prefix_distribution=$SAMPLED_PREFIX_DISTRIBUTION"
         echo "sampled_prefix_log_interval=$SAMPLED_PREFIX_LOG_INTERVAL"
-        echo "mrl_gradient_conflict_interval=$MRL_GRADIENT_CONFLICT_INTERVAL"
-        echo "residual_alignment_log_interval=$RESIDUAL_ALIGNMENT_LOG_INTERVAL"
-        echo "mrl_conflict_gating=$MRL_CONFLICT_GATING"
-        echo "mrl_conflict_mode=$MRL_CONFLICT_MODE"
-        echo "mrl_conflict_alpha=$MRL_CONFLICT_ALPHA"
-        echo "mrl_conflict_eps=$MRL_CONFLICT_EPS"
-        echo "run_mrl=$RUN_MRL"
-        echo "run_residual_aligned_mrl=$RUN_RESIDUAL_ALIGNED_MRL"
+        echo "prefix_mask_prob=$PREFIX_MASK_PROB"
+        echo "prefix_mask_scale=$PREFIX_MASK_SCALE"
         echo "run_retrieval_metrics=$RUN_RETRIEVAL_METRICS"
-        echo "residual_align_mode=$RESIDUAL_ALIGN_MODE"
-        echo "residual_align_orthogonal_map=$RESIDUAL_ALIGN_ORTHOGONAL_MAP"
-        echo "residual_align_use_trivialization=$RESIDUAL_ALIGN_USE_TRIVIALIZATION"
-        echo "residual_align_mse_weight=$RESIDUAL_ALIGN_MSE_WEIGHT"
-        echo "residual_align_cosine_weight=$RESIDUAL_ALIGN_COSINE_WEIGHT"
-        echo "residual_align_detach_prefix_target=$RESIDUAL_ALIGN_DETACH_PREFIX_TARGET"
-        echo "residual_interpolation_alpha=$RESIDUAL_INTERPOLATION_ALPHA"
     } > "$EXPERIMENT_DIR/manifest.txt"
 }
 
-train_run() {
-    local run_name=$1
-    shift
-
+train_mrl() {
+    local run_name=mrl
     local run_dir="$TRAINLOG_DIR/$run_name"
     if [[ -e "$run_dir" ]]; then
         echo "Run directory already exists: $run_dir"
@@ -164,7 +96,7 @@ train_run() {
         exit 1
     fi
 
-    echo "Training $run_name..."
+    echo "Training MRL..."
     (
         cd "$ROOT_DIR/train"
         "$PYTHON" train_imagenet.py \
@@ -179,7 +111,8 @@ train_run() {
             --validation.batch_size="$VAL_BATCH_SIZE" \
             --logging.folder="$TRAINLOG_DIR" \
             --logging.run_name="$run_name" \
-            "$@"
+            --model.mrl=1 \
+            "${MRL_TRAINING_ARGS[@]}"
     )
 
     local checkpoint="$run_dir/final_weights.pt"
@@ -193,23 +126,15 @@ train_run() {
     fi
 }
 
-eval_run() {
-    local run_name=$1
-    shift
-
-    local checkpoint="$TRAINLOG_DIR/$run_name/final_weights.pt"
-    local metrics_output="$EVAL_DIR/${run_name}.json"
+eval_mrl() {
+    local checkpoint="$TRAINLOG_DIR/mrl/final_weights.pt"
+    local metrics_output="$EVAL_DIR/mrl.json"
     local deterministic_args=()
     if [[ "$DETERMINISTIC" == "1" ]]; then
         deterministic_args=(--deterministic)
     fi
 
-    if [[ ! -f "$checkpoint" ]]; then
-        echo "Missing checkpoint for $run_name: $checkpoint"
-        exit 1
-    fi
-
-    echo "Evaluating $run_name..."
+    echo "Evaluating MRL..."
     (
         cd "$ROOT_DIR/inference"
         "$PYTHON" pytorch_inference.py \
@@ -220,7 +145,7 @@ eval_run() {
             --seed "$SEED" \
             "${deterministic_args[@]}" \
             --metrics_output "$metrics_output" \
-            "$@"
+            --mrl
     )
 }
 
@@ -236,28 +161,12 @@ run_retrieval_metrics() {
     SEED="$SEED" \
     DETERMINISTIC="$DETERMINISTIC" \
     EVAL_WORKERS="$EVAL_WORKERS" \
-    RESIDUAL_INTERPOLATION_ALPHA="$RESIDUAL_INTERPOLATION_ALPHA" \
         "$ROOT_DIR/run_imagenet_retrieval_metrics.sh" "$EXPERIMENT_DIR"
 }
 
 write_manifest
-
-if [[ "$RUN_MRL" == "1" ]]; then
-    train_run mrl \
-        "${MRL_TRAINING_ARGS[@]}" \
-        "${MRL_CONFLICT_TRAINING_ARGS[@]}" \
-        --model.mrl=1
-    eval_run mrl --mrl
-fi
-
-if [[ "$RUN_RESIDUAL_ALIGNED_MRL" == "1" ]]; then
-    train_run residual_aligned_mrl \
-        "${MRL_TRAINING_ARGS[@]}" \
-        "${RESIDUAL_ALIGNED_TRAINING_ARGS[@]}"
-    eval_run residual_aligned_mrl \
-        "${RESIDUAL_ALIGNED_EVAL_ARGS[@]}"
-fi
-
+train_mrl
+eval_mrl
 run_retrieval_metrics
 
 echo "Done."

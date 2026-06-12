@@ -7,15 +7,6 @@ MODEL_DIRS = {
     "mrl": "mrl",
     "mrl_e": "mrl_e",
     "ff": "ff",
-    "residual_aligned_mrl": "residual_aligned_mrl",
-    "t_orthogonal_mrl": "t_orthogonal_mrl",
-    "bor_mrl": "bor_mrl",
-    "bor_block_mrl": "bor_block_mrl",
-    "cascade_stop_gradient_mrl": "cascade_stop_gradient_mrl",
-    "bor_mrl_frozen": "bor_mrl_frozen",
-    "bor_mrl_cayley": "bor_mrl_cayley",
-    "bor_mrl_householder": "bor_mrl_householder",
-    "bor_mrl_residual": "bor_mrl_residual",
 }
 
 MODEL_ALIASES = {
@@ -27,33 +18,6 @@ MODEL_ALIASES = {
     "fixed": "ff",
     "fixed_feature": "ff",
     "full_feature": "ff",
-    "residual_aligned_mrl": "residual_aligned_mrl",
-    "residual-aligned-mrl": "residual_aligned_mrl",
-    "ramrl": "residual_aligned_mrl",
-    "ra_mrl": "residual_aligned_mrl",
-    "t": "t_orthogonal_mrl",
-    "t_orthogonal": "t_orthogonal_mrl",
-    "t_orthogonal_mrl": "t_orthogonal_mrl",
-    "t-orthogonal-mrl": "t_orthogonal_mrl",
-    "bor": "bor_mrl",
-    "bor_mrl": "bor_mrl",
-    "bor-mrl": "bor_mrl",
-    "bor_block_mrl": "bor_block_mrl",
-    "bor-block-mrl": "bor_block_mrl",
-    "cascade_stop_gradient_mrl": "cascade_stop_gradient_mrl",
-    "cascade-stop-gradient-mrl": "cascade_stop_gradient_mrl",
-    "cascade_sg_mrl": "cascade_stop_gradient_mrl",
-    "cascade-sg-mrl": "cascade_stop_gradient_mrl",
-    "bor_mrl_frozen": "bor_mrl_frozen",
-    "bor-mrl-frozen": "bor_mrl_frozen",
-    "bor_mrl_cayley": "bor_mrl_cayley",
-    "bor-mrl-cayley": "bor_mrl_cayley",
-    "bor_mrl_householder": "bor_mrl_householder",
-    "bor-mrl-householder": "bor_mrl_householder",
-    "bor_mrl_residual": "bor_mrl_residual",
-    "bor-mrl-residual": "bor_mrl_residual",
-    "bor_residual_mrl": "bor_mrl_residual",
-    "bor-residual-mrl": "bor_mrl_residual",
 }
 
 
@@ -78,8 +42,6 @@ def default_feature_config_candidates(model, rep_size):
             f"mrl1_e1_ff{rep_size}",
             f"mrl0_e1_ff{rep_size}",  # Legacy notebook naming.
         ]
-    if model == "residual_aligned_mrl" or model == "t_orthogonal_mrl" or model.startswith("bor_"):
-        return [f"mrl0_e0_ff{rep_size}"]
     return [f"mrl0_e0_ff{rep_size}"]
 
 
@@ -97,12 +59,12 @@ def dataset_name_candidates(dataset):
     return list(dict.fromkeys(candidates))
 
 
-def resolve_feature_path(root, dataset, split, config_candidates, suffix):
+def resolve_feature_path(root, dataset, split, config_candidates, array_kind):
     root = Path(root)
     tried = []
     for dataset_name in dataset_name_candidates(dataset):
         for config in config_candidates:
-            path = root / f"{dataset_name}_{split}_{config}-{suffix}.npy"
+            path = root / f"{dataset_name}_{split}_{config}-{array_kind}.npy"
             tried.append(path)
             if path.exists():
                 return path
@@ -110,12 +72,12 @@ def resolve_feature_path(root, dataset, split, config_candidates, suffix):
     raise FileNotFoundError(f"Could not find feature file. Tried:\n  {tried_str}")
 
 
-def resolve_feature_pair(root, db_dataset, query_dataset, config_candidates, suffix):
+def resolve_feature_pair(root, db_dataset, query_dataset, config_candidates, array_kind):
     last_error = None
     for config in config_candidates:
         try:
-            db_path = resolve_feature_path(root, db_dataset, "train", [config], suffix)
-            query_path = resolve_feature_path(root, query_dataset, "val", [config], suffix)
+            db_path = resolve_feature_path(root, db_dataset, "train", [config], array_kind)
+            query_path = resolve_feature_path(root, query_dataset, "val", [config], array_kind)
             return config, db_path, query_path
         except FileNotFoundError as exc:
             last_error = exc

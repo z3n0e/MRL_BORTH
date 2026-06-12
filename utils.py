@@ -53,6 +53,7 @@ def evaluate_model(model, dataloader, show_progress_bar=True, notebook_progress_
 def evaluate_model_ff(model, data_loader, show_progress_bar=False, notebook_progress_bar=False, tta=False, imagenetA=False, imagenetO=False, imagenetR=False):
 
 	torch.backends.cudnn.benchmark = True
+	device = next(model.parameters()).device
 	num_images = 0
 	num_top1_correct = 0
 	num_top5_correct = 0
@@ -70,7 +71,9 @@ def evaluate_model_ff(model, data_loader, show_progress_bar=False, notebook_prog
 		for ii, (img_input, target) in enumerable:
 			gt.append(target)
 			unique_labels= torch.unique(target)
-			img_input = img_input.cuda(non_blocking=True)
+			img_input = img_input.to(device, non_blocking=True)
+			if device.type == "cuda":
+				img_input = img_input.contiguous(memory_format=torch.channels_last)
 			logits = model(img_input)
 			if tta:
 				logits+= model(torch.flip(img_input, dims=[3]))
@@ -112,6 +115,7 @@ def evaluate_model_ff(model, data_loader, show_progress_bar=False, notebook_prog
 
 def evaluate_model_nesting(model, data_loader, show_progress_bar=False, notebook_progress_bar=False, nesting_list=[2**i for i in range(3, 12)], tta=False, imagenetA= False, imagenetO=False, imagenetR=False):
 	torch.backends.cudnn.benchmark = True
+	device = next(model.parameters()).device
 
 	num_images = 0
 	num_top1_correct = {}
@@ -134,7 +138,9 @@ def evaluate_model_nesting(model, data_loader, show_progress_bar=False, notebook
 		for ii, (img_input, target) in enumerable:
 			gt.append(target)
 			unique_labels= torch.unique(target)
-			img_input = img_input.cuda(non_blocking=True)
+			img_input = img_input.to(device, non_blocking=True)
+			if device.type == "cuda":
+				img_input = img_input.contiguous(memory_format=torch.channels_last)
 			logits = model(img_input); logits=torch.stack(logits, dim=0)
 			if tta:
 				logits+= torch.stack(model(torch.flip(img_input, dims=[3])), dim=0)
@@ -216,11 +222,10 @@ def append_feature_vector_to_list(activation, label, rep_size):
 	:param label: ground truth label
 	:param rep_size: representation size to be stored
 	"""
-	for i in range (activation.shape[0]):
-		x = activation[i].cpu().detach().numpy()
-		y = label[i].cpu().detach().numpy()
-		fwd_pass_y_list.append(y)
-		fwd_pass_x_list.append(x[:rep_size])
+	x = activation[:, :rep_size].cpu().detach().numpy()
+	y = label.cpu().detach().numpy().reshape(-1, 1)
+	fwd_pass_x_list.append(x)
+	fwd_pass_y_list.append(y)
 
 
 def dump_feature_vector_array_lists(config_name, rep_size,  random_sample_dim, output_path):
@@ -233,8 +238,8 @@ def dump_feature_vector_array_lists(config_name, rep_size,  random_sample_dim, o
 	"""
 
 	# save X (n x 2048), y (n x 1) to disk, where n = num_samples
-	X_fwd_pass = np.asarray(fwd_pass_x_list, dtype=np.float32)
-	y_fwd_pass = np.asarray(fwd_pass_y_list, dtype=np.float16).reshape(-1,1)
+	X_fwd_pass = np.concatenate(fwd_pass_x_list, axis=0).astype(np.float32, copy=False)
+	y_fwd_pass = np.concatenate(fwd_pass_y_list, axis=0).astype(np.float16, copy=False).reshape(-1, 1)
 
 	if random_sample_dim < X_fwd_pass.shape[0]:
 		random_indices = np.random.choice(X_fwd_pass.shape[0], size=random_sample_dim, replace=False)
@@ -263,16 +268,20 @@ def generate_retrieval_data(model, data_loader, config, random_sample_dim, rep_s
 	:param output_path: path to dump database and query arrays after inference
 	"""
 	model.eval()
+	device = next(model.parameters()).device
 	hook_handle = model.avgpool.register_forward_hook(get_activation('avgpool'))
 
 	try:
-		with torch.no_grad():
-			with autocast():
+		with torch.inference_mode():
+			with autocast(enabled=device.type == "cuda"):
 				progress_every = max(1, int(len(data_loader) / 20))
 				for i_batch, (images, target) in enumerate(data_loader):
-					model(images.cuda(non_blocking=True))
+					images = images.to(device, non_blocking=True)
+					if device.type == "cuda":
+						images = images.contiguous(memory_format=torch.channels_last)
+					model(images)
 					features = activation['avgpool'].flatten(1)
-					append_feature_vector_to_list(features, target.cuda(non_blocking=True), rep_size)
+					append_feature_vector_to_list(features, target, rep_size)
 					if (i_batch) % progress_every == 0:
 						print("Finished processing: %f %%" % (i_batch / len(data_loader) * 100))
 				dump_feature_vector_array_lists(config, rep_size, random_sample_dim, output_path)

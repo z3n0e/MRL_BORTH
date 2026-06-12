@@ -8,7 +8,6 @@ try:
     from retrieval.common import (
         DEFAULT_NESTING_LIST,
         default_feature_config_candidates,
-        format_list_for_filename,
         model_subdir,
         normalize_model_name,
         resolve_feature_pair,
@@ -18,7 +17,6 @@ except ImportError:
     from common import (
         DEFAULT_NESTING_LIST,
         default_feature_config_candidates,
-        format_list_for_filename,
         model_subdir,
         normalize_model_name,
         resolve_feature_pair,
@@ -32,19 +30,14 @@ def parse_args():
     parser.add_argument("--dataset", default="1K", help="Dataset name used in query filenames, e.g. 1K, V2, 4K, CIFAR100")
     parser.add_argument("--db-dataset", default="", help="Optional database dataset name. Defaults to 1K for V2, otherwise --dataset")
     parser.add_argument("--query-dataset", default="", help="Optional query dataset name. Defaults to --dataset")
-    parser.add_argument("--model", default="mrl", help="Model family: mrl, residual_aligned_mrl, mrl_e, or ff")
+    parser.add_argument("--model", default="mrl", help="Model family: mrl, mrl_e, or ff")
     parser.add_argument("--feature-config", default="", help="Override feature filename config, e.g. mrl1_e0_ff2048")
     parser.add_argument("--rep-size", type=int, default=2048, help="Feature filename representation size")
-    parser.add_argument("--eval-config", choices=["vanilla", "reranking", "funnel"], default="vanilla")
+    parser.add_argument("--eval-config", choices=["vanilla"], default="vanilla")
     parser.add_argument("--index-type", default="exactl2", help="Index name used in neighbor filenames")
     parser.add_argument("--dims", type=int, nargs="+", default=None, help="Representation dimensions to evaluate")
-    parser.add_argument("--residual-interpolate-alpha", type=float, default=0.0, help="Filename tag for residual-interpolated neighbor files")
     parser.add_argument("--shortlist", type=int, nargs="+", default=[10, 25, 50, 100], help="k values for mAP/precision/recall/top-k")
-    parser.add_argument("--neighbor-k", type=int, default=2048, help="Shortlist length used in vanilla neighbor filenames")
-    parser.add_argument("--ret-dim", type=int, default=8, help="Retrieval dimension for reranking/funnel filenames")
-    parser.add_argument("--rerank-shortlist", type=int, default=200, help="Shortlist length used in reranked filenames")
-    parser.add_argument("--funnel-rerank-dims", type=int, nargs="+", default=[16, 32, 64, 128, 2048])
-    parser.add_argument("--funnel-shortlist", type=int, nargs="+", default=[800, 400, 200, 50, 10])
+    parser.add_argument("--neighbor-k", dest="nn_k", type=int, default=2048, help="Shortlist length used in vanilla neighbor filenames")
     parser.add_argument("--neighbors-path", type=Path, default=None, help="Direct neighbor CSV path; use with one dimension/config")
     parser.add_argument("--output-json", type=Path, default=None, help="Optional JSON file for metrics")
     return parser.parse_args()
@@ -71,35 +64,13 @@ def load_csv_int_matrix(path):
     return matrix
 
 
-def residual_interpolation_tag(alpha):
-    if abs(float(alpha)) < 1e-12:
-        return ""
-    value = f"{float(alpha):g}".replace("-", "m").replace(".", "p")
-    return f"_resinterp{value}"
-
-
 def neighbors_path(args, dim):
     if args.neighbors_path is not None:
         return args.neighbors_path
 
     model_dir = model_subdir(args.model)
-    tag = residual_interpolation_tag(args.residual_interpolate_alpha)
-    if args.eval_config == "vanilla":
-        filename = f"{args.index_type}_{dim}dim_{args.neighbor_k}shortlist_{args.dataset}{tag}.csv"
-        return args.root / "neighbors" / model_dir / filename
-
-    if args.eval_config == "reranking":
-        filename = (
-            f"{args.ret_dim}dim-reranked{dim}_{args.rerank_shortlist}"
-            f"shortlist_{args.dataset}_{args.index_type}.csv"
-        )
-        return args.root / "neighbors" / "reranked" / model_dir / filename
-
-    filename = (
-        f"{args.ret_dim}dim-cascade{format_list_for_filename(args.funnel_rerank_dims)}_"
-        f"shortlist{format_list_for_filename(args.funnel_shortlist)}_{args.dataset}_{args.index_type}.csv"
-    )
-    return args.root / "neighbors" / "funnel_retrieval" / model_dir / filename
+    filename = f"{args.index_type}_{dim}dim_{args.nn_k}shortlist_{args.dataset}.csv"
+    return args.root / "neighbors" / model_dir / filename
 
 
 def print_metric_row(dim, k, metrics):
@@ -120,9 +91,6 @@ def main():
             dims = [args.rep_size]
         else:
             dims = [args.rep_size] if args.model == "ff" else DEFAULT_NESTING_LIST
-    if args.eval_config == "funnel":
-        dims = [args.ret_dim]
-
     db_dataset, query_dataset = default_datasets(args)
     resolved_config, db_label_path, query_label_path = resolve_feature_pair(
         args.root,
@@ -146,7 +114,6 @@ def main():
         "feature_config": resolved_config,
         "eval_config": args.eval_config,
         "index_type": args.index_type,
-        "residual_interpolate_alpha": float(args.residual_interpolate_alpha),
         "metrics": [],
     }
 

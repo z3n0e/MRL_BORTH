@@ -11,9 +11,7 @@ RUN_DIR=${1:-${RUN_DIR:-}}
 
 if [[ -z "$RUN_DIR" ]]; then
     echo "Usage: $0 /path/to/imagenet_runs/<run_dir>"
-    echo
-    echo "Example:"
-    echo "  IMAGENET_DIR=/path/to/imagenet $0 imagenet_runs/imagenet_seed_0_20260601_234841"
+    echo "Example: IMAGENET_DIR=/path/to/imagenet $0 imagenet_runs/imagenet_seed_0_..."
     exit 2
 fi
 
@@ -42,19 +40,8 @@ fi
 TRAINING_MRL_LOSS_MODE=${MRL_LOSS_MODE:-}
 TRAINING_SAMPLED_PREFIX_DISTRIBUTION=${SAMPLED_PREFIX_DISTRIBUTION:-}
 TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=${SAMPLED_PREFIX_LOG_INTERVAL:-}
-TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL=${MRL_GRADIENT_CONFLICT_INTERVAL:-}
-TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL=${RESIDUAL_ALIGNMENT_LOG_INTERVAL:-}
-TRAINING_MRL_CONFLICT_GATING=${MRL_CONFLICT_GATING:-}
-TRAINING_MRL_CONFLICT_MODE=${MRL_CONFLICT_MODE:-}
-TRAINING_MRL_CONFLICT_ALPHA=${MRL_CONFLICT_ALPHA:-}
-TRAINING_MRL_CONFLICT_EPS=${MRL_CONFLICT_EPS:-}
-TRAINING_RESIDUAL_ALIGN_MODE=${RESIDUAL_ALIGN_MODE:-}
-TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP=${RESIDUAL_ALIGN_ORTHOGONAL_MAP:-}
-TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION=${RESIDUAL_ALIGN_USE_TRIVIALIZATION:-}
-TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT=${RESIDUAL_ALIGN_MSE_WEIGHT:-}
-TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT=${RESIDUAL_ALIGN_COSINE_WEIGHT:-}
-TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET=${RESIDUAL_ALIGN_DETACH_PREFIX_TARGET:-}
-TRAINING_RESIDUAL_INTERPOLATION_ALPHA=${RESIDUAL_INTERPOLATION_ALPHA:-}
+TRAINING_PREFIX_MASK_PROB=${PREFIX_MASK_PROB:-}
+TRAINING_PREFIX_MASK_SCALE=${PREFIX_MASK_SCALE:-}
 
 if [[ -f "$MANIFEST" ]]; then
     while IFS='=' read -r key value; do
@@ -68,44 +55,11 @@ if [[ -f "$MANIFEST" ]]; then
             sampled_prefix_log_interval)
                 [[ -z "$TRAINING_SAMPLED_PREFIX_LOG_INTERVAL" ]] && TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=$value
                 ;;
-            mrl_gradient_conflict_interval)
-                [[ -z "$TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL" ]] && TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL=$value
+            prefix_mask_prob)
+                [[ -z "$TRAINING_PREFIX_MASK_PROB" ]] && TRAINING_PREFIX_MASK_PROB=$value
                 ;;
-            residual_alignment_log_interval)
-                [[ -z "$TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL" ]] && TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL=$value
-                ;;
-            mrl_conflict_gating)
-                [[ -z "$TRAINING_MRL_CONFLICT_GATING" ]] && TRAINING_MRL_CONFLICT_GATING=$value
-                ;;
-            mrl_conflict_mode)
-                [[ -z "$TRAINING_MRL_CONFLICT_MODE" ]] && TRAINING_MRL_CONFLICT_MODE=$value
-                ;;
-            mrl_conflict_alpha)
-                [[ -z "$TRAINING_MRL_CONFLICT_ALPHA" ]] && TRAINING_MRL_CONFLICT_ALPHA=$value
-                ;;
-            mrl_conflict_eps)
-                [[ -z "$TRAINING_MRL_CONFLICT_EPS" ]] && TRAINING_MRL_CONFLICT_EPS=$value
-                ;;
-            residual_align_mode)
-                [[ -z "$TRAINING_RESIDUAL_ALIGN_MODE" ]] && TRAINING_RESIDUAL_ALIGN_MODE=$value
-                ;;
-            residual_align_orthogonal_map)
-                [[ -z "$TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP" ]] && TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP=$value
-                ;;
-            residual_align_use_trivialization)
-                [[ -z "$TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION" ]] && TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION=$value
-                ;;
-            residual_align_mse_weight)
-                [[ -z "$TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT" ]] && TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT=$value
-                ;;
-            residual_align_cosine_weight)
-                [[ -z "$TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT" ]] && TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT=$value
-                ;;
-            residual_align_detach_prefix_target)
-                [[ -z "$TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET" ]] && TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET=$value
-                ;;
-            residual_interpolation_alpha)
-                [[ -z "$TRAINING_RESIDUAL_INTERPOLATION_ALPHA" ]] && TRAINING_RESIDUAL_INTERPOLATION_ALPHA=$value
+            prefix_mask_scale)
+                [[ -z "$TRAINING_PREFIX_MASK_SCALE" ]] && TRAINING_PREFIX_MASK_SCALE=$value
                 ;;
         esac
     done < "$MANIFEST"
@@ -114,19 +68,8 @@ fi
 TRAINING_MRL_LOSS_MODE=${TRAINING_MRL_LOSS_MODE:-all}
 TRAINING_SAMPLED_PREFIX_DISTRIBUTION=${TRAINING_SAMPLED_PREFIX_DISTRIBUTION:-uniform}
 TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=${TRAINING_SAMPLED_PREFIX_LOG_INTERVAL:-100}
-TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL=${TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL:-0}
-TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL=${TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL:-100}
-TRAINING_MRL_CONFLICT_GATING=${TRAINING_MRL_CONFLICT_GATING:-0}
-TRAINING_MRL_CONFLICT_MODE=${TRAINING_MRL_CONFLICT_MODE:-none}
-TRAINING_MRL_CONFLICT_ALPHA=${TRAINING_MRL_CONFLICT_ALPHA:-0.5}
-TRAINING_MRL_CONFLICT_EPS=${TRAINING_MRL_CONFLICT_EPS:-1e-8}
-TRAINING_RESIDUAL_ALIGN_MODE=${TRAINING_RESIDUAL_ALIGN_MODE:-orthogonal}
-TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP=${TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP:-matrix_exp}
-TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION=${TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION:-1}
-TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT=${TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT:-10.0}
-TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT=${TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT:-10.0}
-TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET=${TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET:-1}
-TRAINING_RESIDUAL_INTERPOLATION_ALPHA=${TRAINING_RESIDUAL_INTERPOLATION_ALPHA:-0.5}
+TRAINING_PREFIX_MASK_PROB=${TRAINING_PREFIX_MASK_PROB:-0.0}
+TRAINING_PREFIX_MASK_SCALE=${TRAINING_PREFIX_MASK_SCALE:-inverted}
 
 PYTHON=${PYTHON:-python}
 RETRIEVAL_ROOT=${RETRIEVAL_ROOT:-"$RUN_DIR/retrieval"}
@@ -155,39 +98,22 @@ echo "Index type: $INDEX_TYPE"
 echo "Neighbor shortlist length: $K"
 echo "Metric k values: $SHORTLIST"
 echo "Training MRL loss mode: $TRAINING_MRL_LOSS_MODE"
-echo "Training residual alignment log interval: $TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL"
-echo "Residual-Aligned MRL orthogonal map: $TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP"
-echo "Residual interpolation alpha: $TRAINING_RESIDUAL_INTERPOLATION_ALPHA"
+echo "Training prefix mask: p=$TRAINING_PREFIX_MASK_PROB scale=$TRAINING_PREFIX_MASK_SCALE"
 echo
 
-run_method() {
-    local name=$1
-    local checkpoint=$2
-    local retrieval_model=$3
-    local rep_size=$4
-    local dims=$5
-    local feature_config=$6
-    local residual_alpha=$7
-    shift 7
-
+run_mrl() {
+    local checkpoint="$CHECKPOINT_DIR/mrl_final_weights.pt"
     if [[ ! -f "$checkpoint" ]]; then
-        echo "Skipping $name: missing checkpoint $checkpoint"
-        return
+        echo "Missing MRL checkpoint: $checkpoint"
+        exit 1
     fi
 
-    local method_root="$RETRIEVAL_ROOT/$name"
-    local metrics_json="$METRICS_DIR/${name}.json"
-    local train_x="$method_root/1K_train_${feature_config}-X.npy"
-    local val_x="$method_root/1K_val_${feature_config}-X.npy"
+    local method_root="$RETRIEVAL_ROOT/mrl"
+    local metrics_json="$METRICS_DIR/mrl.json"
+    local train_x="$method_root/1K_train_mrl1_e0_ff2048-X.npy"
+    local val_x="$method_root/1K_val_mrl1_e0_ff2048-X.npy"
 
     mkdir -p "$method_root"
-
-    echo "================================================================"
-    echo "Retrieval metrics for $name"
-    echo "Checkpoint: $checkpoint"
-    echo "Feature config: $feature_config"
-    echo "Dims: $dims"
-    echo "Residual interpolation alpha: $residual_alpha"
 
     local deterministic_args=()
     if [[ "$DETERMINISTIC" == "1" ]]; then
@@ -207,7 +133,7 @@ run_method() {
                 --workers "$EVAL_WORKERS" \
                 --seed "$SEED" \
                 "${deterministic_args[@]}" \
-                "$@"
+                --mrl
         )
     else
         echo "Using existing retrieval arrays in $method_root"
@@ -217,16 +143,15 @@ run_method() {
         faiss_nn.py
         --root "$method_root"
         --dataset 1K
-        --model "$retrieval_model"
-        --feature-config "$feature_config"
-        --rep-size "$rep_size"
+        --model mrl
+        --feature-config mrl1_e0_ff2048
+        --rep-size 2048
         --index-type "$INDEX_TYPE"
         --k "$K"
-        --residual-interpolate-alpha "$residual_alpha"
         --dims
     )
     local dim
-    for dim in $dims; do
+    for dim in $NESTED_DIMS; do
         faiss_args+=("$dim")
     done
     if [[ "$USE_GPU" == "1" ]]; then
@@ -246,17 +171,16 @@ run_method() {
         compute_metrics.py
         --root "$method_root"
         --dataset 1K
-        --model "$retrieval_model"
-        --feature-config "$feature_config"
-        --rep-size "$rep_size"
+        --model mrl
+        --feature-config mrl1_e0_ff2048
+        --rep-size 2048
         --eval-config vanilla
         --index-type "$INDEX_TYPE"
         --neighbor-k "$K"
-        --residual-interpolate-alpha "$residual_alpha"
         --output-json "$metrics_json"
         --dims
     )
-    for dim in $dims; do
+    for dim in $NESTED_DIMS; do
         metric_args+=("$dim")
     done
     metric_args+=(--shortlist)
@@ -272,39 +196,14 @@ run_method() {
     )
 }
 
-run_method mrl \
-    "$CHECKPOINT_DIR/mrl_final_weights.pt" \
-    mrl 2048 "$NESTED_DIMS" mrl1_e0_ff2048 0.0 \
-    --mrl
-
-run_method residual_aligned_mrl \
-    "$CHECKPOINT_DIR/residual_aligned_mrl_final_weights.pt" \
-    residual_aligned_mrl 2048 "$NESTED_DIMS" mrl0_e0_ff2048 "$TRAINING_RESIDUAL_INTERPOLATION_ALPHA" \
-    --residual_aligned_mrl \
-    --residual_align_mode "$TRAINING_RESIDUAL_ALIGN_MODE" \
-    --residual_align_orthogonal_map "$TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP" \
-    --residual_align_use_trivialization "$TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION" \
-    --residual_align_mse_weight "$TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT" \
-    --residual_align_cosine_weight "$TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT" \
-    --residual_align_detach_prefix_target "$TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET"
+run_mrl
 
 "$PYTHON" - "$METRICS_DIR" "$SUMMARY_CSV" \
     "$TRAINING_MRL_LOSS_MODE" \
     "$TRAINING_SAMPLED_PREFIX_DISTRIBUTION" \
     "$TRAINING_SAMPLED_PREFIX_LOG_INTERVAL" \
-    "$TRAINING_MRL_GRADIENT_CONFLICT_INTERVAL" \
-    "$TRAINING_RESIDUAL_ALIGNMENT_LOG_INTERVAL" \
-    "$TRAINING_MRL_CONFLICT_GATING" \
-    "$TRAINING_MRL_CONFLICT_MODE" \
-    "$TRAINING_MRL_CONFLICT_ALPHA" \
-    "$TRAINING_MRL_CONFLICT_EPS" \
-    "$TRAINING_RESIDUAL_ALIGN_MODE" \
-    "$TRAINING_RESIDUAL_ALIGN_ORTHOGONAL_MAP" \
-    "$TRAINING_RESIDUAL_ALIGN_USE_TRIVIALIZATION" \
-    "$TRAINING_RESIDUAL_ALIGN_MSE_WEIGHT" \
-    "$TRAINING_RESIDUAL_ALIGN_COSINE_WEIGHT" \
-    "$TRAINING_RESIDUAL_ALIGN_DETACH_PREFIX_TARGET" \
-    "$TRAINING_RESIDUAL_INTERPOLATION_ALPHA" <<'PY'
+    "$TRAINING_PREFIX_MASK_PROB" \
+    "$TRAINING_PREFIX_MASK_SCALE" <<'PY'
 import csv
 import json
 import sys
@@ -315,19 +214,8 @@ summary_csv = Path(sys.argv[2])
 training_mrl_loss_mode = sys.argv[3]
 training_sampled_prefix_distribution = sys.argv[4]
 training_sampled_prefix_log_interval = sys.argv[5]
-training_mrl_gradient_conflict_interval = sys.argv[6]
-training_residual_alignment_log_interval = sys.argv[7]
-training_mrl_conflict_gating = sys.argv[8]
-training_mrl_conflict_mode = sys.argv[9]
-training_mrl_conflict_alpha = sys.argv[10]
-training_mrl_conflict_eps = sys.argv[11]
-training_residual_align_mode = sys.argv[12]
-training_residual_align_orthogonal_map = sys.argv[13]
-training_residual_align_use_trivialization = sys.argv[14]
-training_residual_align_mse_weight = sys.argv[15]
-training_residual_align_cosine_weight = sys.argv[16]
-training_residual_align_detach_prefix_target = sys.argv[17]
-training_residual_interpolation_alpha = sys.argv[18]
+training_prefix_mask_prob = sys.argv[6]
+training_prefix_mask_scale = sys.argv[7]
 rows = []
 
 for path in sorted(metrics_dir.glob("*.json")):
@@ -340,23 +228,11 @@ for path in sorted(metrics_dir.glob("*.json")):
             "training_mrl_loss_mode": training_mrl_loss_mode,
             "training_sampled_prefix_distribution": training_sampled_prefix_distribution,
             "training_sampled_prefix_log_interval": training_sampled_prefix_log_interval,
-            "training_mrl_gradient_conflict_interval": training_mrl_gradient_conflict_interval,
-            "training_residual_alignment_log_interval": training_residual_alignment_log_interval,
-            "training_mrl_conflict_gating": training_mrl_conflict_gating,
-            "training_mrl_conflict_mode": training_mrl_conflict_mode,
-            "training_mrl_conflict_alpha": training_mrl_conflict_alpha,
-            "training_mrl_conflict_eps": training_mrl_conflict_eps,
-            "training_residual_align_mode": training_residual_align_mode,
-            "training_residual_align_orthogonal_map": training_residual_align_orthogonal_map,
-            "training_residual_align_use_trivialization": training_residual_align_use_trivialization,
-            "training_residual_align_mse_weight": training_residual_align_mse_weight,
-            "training_residual_align_cosine_weight": training_residual_align_cosine_weight,
-            "training_residual_align_detach_prefix_target": training_residual_align_detach_prefix_target,
-            "training_residual_interpolation_alpha": training_residual_interpolation_alpha,
+            "training_prefix_mask_prob": training_prefix_mask_prob,
+            "training_prefix_mask_scale": training_prefix_mask_scale,
             "feature_config": data.get("feature_config", ""),
             "eval_config": data.get("eval_config", ""),
             "index_type": data.get("index_type", ""),
-            "residual_interpolate_alpha": data.get("residual_interpolate_alpha", ""),
             "dim": metric.get("dim", ""),
             "k": metric.get("k", ""),
             "top1": metric.get("top1", ""),
@@ -371,21 +247,9 @@ fieldnames = [
     "method", "model", "training_mrl_loss_mode",
     "training_sampled_prefix_distribution",
     "training_sampled_prefix_log_interval",
-    "training_mrl_gradient_conflict_interval",
-    "training_residual_alignment_log_interval",
-    "training_mrl_conflict_gating",
-    "training_mrl_conflict_mode",
-    "training_mrl_conflict_alpha",
-    "training_mrl_conflict_eps",
-    "training_residual_align_mode",
-    "training_residual_align_orthogonal_map",
-    "training_residual_align_use_trivialization",
-    "training_residual_align_mse_weight",
-    "training_residual_align_cosine_weight",
-    "training_residual_align_detach_prefix_target",
-    "training_residual_interpolation_alpha",
+    "training_prefix_mask_prob",
+    "training_prefix_mask_scale",
     "feature_config", "eval_config", "index_type",
-    "residual_interpolate_alpha",
     "dim", "k", "top1", "mAP", "precision", "recall", "topk",
     "neighbors_path",
 ]

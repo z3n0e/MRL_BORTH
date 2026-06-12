@@ -27,14 +27,13 @@ def parse_args():
     parser.add_argument("--dataset", default="1K", help="Dataset name used in query filenames, e.g. 1K, V2, 4K, CIFAR100")
     parser.add_argument("--db-dataset", default="", help="Optional database dataset name. Defaults to 1K for V2, otherwise --dataset")
     parser.add_argument("--query-dataset", default="", help="Optional query dataset name. Defaults to --dataset")
-    parser.add_argument("--model", default="mrl", help="Model family: mrl, residual_aligned_mrl, mrl_e, or ff")
+    parser.add_argument("--model", default="mrl", help="Model family: mrl, mrl_e, or ff")
     parser.add_argument("--feature-config", default="", help="Override feature filename config, e.g. mrl1_e0_ff2048")
     parser.add_argument("--rep-size", type=int, default=2048, help="Feature filename representation size")
     parser.add_argument("--index-type", default="exactl2", help="exactl2, hnsw8, hnsw32, hnsw_8, or hnsw_32")
     parser.add_argument("--hnsw-max-neighbors", type=int, default=32)
     parser.add_argument("--k", type=int, default=2048, help="Number of nearest neighbors to save")
     parser.add_argument("--dims", type=int, nargs="+", default=None, help="Representation dimensions to search")
-    parser.add_argument("--residual-interpolate-alpha", type=float, default=0.0, help="Blend prefix and next residual before search: (1-alpha)*prefix + alpha*residual")
     parser.add_argument("--gpu", action="store_true", help="Use all GPUs for exact L2 search when FAISS GPU is available")
     parser.add_argument("--rebuild-index", action="store_true", help="Rebuild indexes even if index files already exist")
     return parser.parse_args()
@@ -78,22 +77,6 @@ def build_index(faiss, xb, index_type, hnsw_max_neighbors):
     return faiss.IndexHNSWFlat(d, neighbors)
 
 
-def residual_interpolation_tag(alpha):
-    if abs(float(alpha)) < 1e-12:
-        return ""
-    value = f"{float(alpha):g}".replace("-", "m").replace(".", "p")
-    return f"_resinterp{value}"
-
-
-def residual_interpolate_vectors(features, dim, alpha):
-    alpha = float(alpha)
-    prefix = features[:, :dim]
-    if abs(alpha) < 1e-12 or 2 * dim > features.shape[1]:
-        return prefix
-    residual = features[:, dim:2 * dim]
-    return (1.0 - alpha) * prefix + alpha * residual
-
-
 def main():
     args = parse_args()
     args.model = normalize_model_name(args.model)
@@ -135,13 +118,12 @@ def main():
             print(f"Skipping dim={dim}; feature arrays only have {max_dim} columns")
             continue
 
-        tag = residual_interpolation_tag(args.residual_interpolate_alpha)
-        index_file = index_dir / f"{args.dataset}_{dim}dim_{args.index_type}{tag}.index"
+        index_file = index_dir / f"{args.dataset}_{dim}dim_{args.index_type}.index"
         if index_file.exists() and not args.rebuild_index:
             print(f"Loading index file: {index_file}")
             cpu_index = faiss.read_index(str(index_file))
         else:
-            xb = residual_interpolate_vectors(database, dim, args.residual_interpolate_alpha)
+            xb = database[:, :dim]
             xb = np.ascontiguousarray(xb, dtype=np.float32)
             faiss.normalize_L2(xb)
             print(f"Database @ dim={dim}: {xb.shape}")
@@ -151,13 +133,13 @@ def main():
             print(f"Wrote index file: {index_file}")
 
         index = faiss.index_cpu_to_all_gpus(cpu_index) if can_use_gpu else cpu_index
-        xq = residual_interpolate_vectors(queryset, dim, args.residual_interpolate_alpha)
+        xq = queryset[:, :dim]
         xq = np.ascontiguousarray(xq, dtype=np.float32)
         faiss.normalize_L2(xq)
         print(f"Queries @ dim={dim}: {xq.shape}")
 
         _, neighbors = index.search(xq, args.k)
-        neighbors_file = neighbors_dir / f"{args.index_type}_{dim}dim_{args.k}shortlist_{args.dataset}{tag}.csv"
+        neighbors_file = neighbors_dir / f"{args.index_type}_{dim}dim_{args.k}shortlist_{args.dataset}.csv"
         np.savetxt(neighbors_file, neighbors, fmt="%d", delimiter=",")
         print(f"Wrote neighbors: {neighbors_file}")
 
