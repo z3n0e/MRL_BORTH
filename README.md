@@ -8,6 +8,8 @@ This repository trains and evaluates standard Matryoshka Representation Learning
 pip3 install -r requirements.txt
 ```
 
+W&B logging is enabled by default. Install `wandb` in the same environment, or set `WANDB_ENABLED=0` to disable the W&B side-channel.
+
 ImageNet training expects the standard TorchVision `ImageFolder` layout:
 
 ```text
@@ -24,11 +26,17 @@ CIFAR-100 uses `torchvision.datasets.CIFAR100` and downloads automatically when 
 
 ## MRL Head
 
-The ResNet classifier is replaced with the MRL linear head in [MRL.py](/home/sricci/Desktop/MRL_BORTH/MRL.py):
+The ResNet classifier is replaced with the MRL linear head in [MRL.py](/home/sricci/Desktop/MRL_BORTH/MRL.py). ImageNet/ResNet-50 uses:
 
 ```python
 nesting_list = [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
 fc_layer = MRL_Linear_Layer(nesting_list, num_classes=1000, efficient=False)
+```
+
+For CIFAR-100/ResNet-18, the feature dimension is 512 and the default prefixes are:
+
+```python
+nesting_list = [8, 16, 32, 64, 128, 256, 512]
 ```
 
 Use `efficient=True` for MRL-E, which shares one classifier over all prefixes.
@@ -39,7 +47,7 @@ CIFAR-100 and ImageNet training support the same training-only inherited-prefix 
 
 ```bash
 python train_imagenet.py \
-  --config-file rn50_configs/rn50_cifar100.yaml \
+  --config-file rn50_configs/rn18_cifar100.yaml \
   --model.mrl=1 \
   --model.prefix_mask_prob=0.1 \
   --model.prefix_mask_scale=inverted
@@ -55,6 +63,8 @@ The default is `--model.prefix_mask_prob=0.0` to preserve baseline accuracy unle
 ./run_cifar100_experiments.sh
 ```
 
+This uses TorchVision ResNet-18 with the CIFAR stem (`3x3` stride-1 `conv1`, no initial maxpool), CIFAR-100 augmentations, 512-dimensional pooled features, prefixes `[8, 16, 32, 64, 128, 256, 512]`, SGD/Nesterov, cosine LR with 5 warmup epochs, and label smoothing `0.1`.
+
 Useful overrides:
 
 ```bash
@@ -62,6 +72,26 @@ CIFAR100_DIR=/path/to/cifar100 \
 PREFIX_MASK_PROB=0.1 \
 ./run_cifar100_experiments.sh
 ```
+
+W&B logging is additive to the existing logs and is on by default:
+
+```bash
+WANDB_PROJECT=mrl-borth \
+./run_cifar100_experiments.sh
+```
+
+Disable W&B with `WANDB_ENABLED=0`.
+
+The full runner groups separate W&B runs for training, classification eval, Neural Collapse, and retrieval under one `WANDB_GROUP`. Metrics are namespaced as `train/*`, `eval/*`, `classification/*`, `nc/*`, and `retrieval/*`.
+
+### W&B Sweep
+
+```bash
+wandb sweep sweeps/cifar100_resnet18_sweep.yaml
+wandb agent <entity>/<project>/<sweep_id>
+```
+
+The sweep optimizes `eval/top1/dim_512` from the CIFAR-100 ResNet-18 MRL training run. Edit `data_root` in [sweeps/cifar100_resnet18_sweep.yaml](/home/sricci/Desktop/MRL_BORTH/sweeps/cifar100_resnet18_sweep.yaml:1) if your CIFAR-100 cache lives somewhere else.
 
 ### ImageNet
 
@@ -82,6 +112,10 @@ python pytorch_inference.py \
   --path ../train/trainlogs/<run_id>/final_weights.pt \
   --dataset CIFAR100 \
   --data_root /path/to/cifar100 \
+  --arch resnet18 \
+  --rep_size 512 \
+  --prefix-dims 8,16,32,64,128,256,512 \
+  --use_blurpool 0 \
   --mrl
 ```
 
@@ -119,6 +153,10 @@ python pytorch_inference.py \
   --dataset CIFAR100 \
   --data_root /path/to/cifar100 \
   --retrieval_array_path ../retrieval_arrays \
+  --arch resnet18 \
+  --rep_size 512 \
+  --prefix-dims 8,16,32,64,128,256,512 \
+  --use_blurpool 0 \
   --mrl
 
 cd ../retrieval
@@ -127,15 +165,36 @@ python faiss_nn.py \
   --root ../retrieval_arrays \
   --dataset CIFAR100 \
   --model mrl \
+  --feature-config mrl1_e0_ff512 \
+  --rep-size 512 \
   --index-type exactl2 \
-  --k 2048
+  --k 2048 \
+  --dims 8 16 32 64 128 256 512
 
 python compute_metrics.py \
   --root ../retrieval_arrays \
   --dataset CIFAR100 \
   --model mrl \
+  --feature-config mrl1_e0_ff512 \
+  --rep-size 512 \
   --eval-config vanilla \
-  --index-type exactl2
+  --index-type exactl2 \
+  --dims 8 16 32 64 128 256 512
+```
+
+## Neural Collapse
+
+CIFAR-100 runs measure the same classical and generalized Neural Collapse diagnostics used by the MNIST experiments:
+
+```bash
+python cifar100_neural_collapse.py \
+  --path train/trainlogs/<run_id>/final_weights.pt \
+  --data-root /path/to/cifar100 \
+  --arch resnet18 \
+  --rep-size 512 \
+  --prefix-dims 8,16,32,64,128,256,512 \
+  --output-csv cifar100_nc_metrics.csv \
+  --mrl
 ```
 
 ## Tests

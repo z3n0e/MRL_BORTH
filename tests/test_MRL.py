@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
+from cifar_resnet import apply_cifar_resnet_stem, build_power2_prefix_dims, parse_prefix_dims
 from MRL import (
     FixedFeatureLayer,
     Matryoshka_CE_Loss,
@@ -208,6 +210,26 @@ def test_custom_num_classes_layers():
     fixed_output = fixed_layer(torch.randn(batch_size, nesting_list[-1]))
 
     assert fixed_output.shape == (batch_size, num_classes)
+
+
+def test_resnet18_cifar_prefix_dims():
+    assert build_power2_prefix_dims(512, nesting_start=3) == [8, 16, 32, 64, 128, 256, 512]
+    assert parse_prefix_dims("8,16,32", feature_dim=512) == [8, 16, 32, 512]
+
+
+def test_apply_cifar_resnet_stem_replaces_conv_and_pool():
+    class TinyResNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+    model = apply_cifar_resnet_stem(TinyResNet())
+
+    assert model.conv1.kernel_size == (3, 3)
+    assert model.conv1.stride == (1, 1)
+    assert model.conv1.padding == (1, 1)
+    assert isinstance(model.maxpool, nn.Identity)
 
 
 def test_idempotency():

@@ -69,7 +69,9 @@ EVAL_WORKERS=${EVAL_WORKERS:-4}
 INDEX_TYPE=${INDEX_TYPE:-exactl2}
 K=${K:-2048}
 SHORTLIST=${SHORTLIST:-"1 5 10 25 50 100"}
-NESTED_DIMS=${NESTED_DIMS:-"8 16 32 64 128 256 512 1024 2048"}
+FEATURE_DIM=${FEATURE_DIM:-512}
+PREFIX_DIMS=${PREFIX_DIMS:-"8,16,32,64,128,256,512"}
+NESTED_DIMS=${NESTED_DIMS:-"8 16 32 64 128 256 512"}
 USE_GPU=${USE_GPU:-1}
 REBUILD_INDEX=${REBUILD_INDEX:-0}
 FORCE_ARRAYS=${FORCE_ARRAYS:-0}
@@ -84,6 +86,8 @@ echo "Summary CSV: $SUMMARY_CSV"
 echo "Index type: $INDEX_TYPE"
 echo "Neighbor shortlist length: $K"
 echo "Metric k values: $SHORTLIST"
+echo "Feature dim: $FEATURE_DIM"
+echo "Prefix dims: $PREFIX_DIMS"
 echo "Training MRL loss mode: $TRAINING_MRL_LOSS_MODE"
 echo "Training prefix mask: p=$TRAINING_PREFIX_MASK_PROB scale=$TRAINING_PREFIX_MASK_SCALE"
 echo
@@ -97,8 +101,9 @@ run_mrl() {
 
     local method_root="$RETRIEVAL_ROOT/mrl"
     local metrics_json="$METRICS_DIR/mrl.json"
-    local train_x="$method_root/CIFAR100_train_mrl1_e0_ff2048-X.npy"
-    local val_x="$method_root/CIFAR100_val_mrl1_e0_ff2048-X.npy"
+    local feature_config="mrl1_e0_ff${FEATURE_DIM}"
+    local train_x="$method_root/CIFAR100_train_${feature_config}-X.npy"
+    local val_x="$method_root/CIFAR100_val_${feature_config}-X.npy"
 
     mkdir -p "$method_root"
 
@@ -117,6 +122,10 @@ run_mrl() {
                 --dataset CIFAR100 \
                 --data_root "$CIFAR100_DIR" \
                 --retrieval_array_path "$method_root" \
+                --arch resnet18 \
+                --rep_size "$FEATURE_DIM" \
+                --prefix-dims "$PREFIX_DIMS" \
+                --use_blurpool 0 \
                 --workers "$EVAL_WORKERS" \
                 --seed "$SEED" \
                 "${deterministic_args[@]}" \
@@ -131,8 +140,8 @@ run_mrl() {
         --root "$method_root"
         --dataset CIFAR100
         --model mrl
-        --feature-config mrl1_e0_ff2048
-        --rep-size 2048
+        --feature-config "$feature_config"
+        --rep-size "$FEATURE_DIM"
         --index-type "$INDEX_TYPE"
         --k "$K"
         --dims
@@ -159,8 +168,8 @@ run_mrl() {
         --root "$method_root"
         --dataset CIFAR100
         --model mrl
-        --feature-config mrl1_e0_ff2048
-        --rep-size 2048
+        --feature-config "$feature_config"
+        --rep-size "$FEATURE_DIM"
         --eval-config vanilla
         --index-type "$INDEX_TYPE"
         --neighbor-k "$K"

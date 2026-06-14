@@ -1,0 +1,62 @@
+program: train/train_imagenet.py
+name: cifar100-resnet18-mrl
+method: bayes
+metric:
+  name: eval/top1/dim_512
+  goal: maximize
+parameters:
+  data_root:
+    value: /home/bagnoli/.cache/torchvision
+  logging_folder:
+    value: ./cifar100_sweep_trainlogs
+  epochs:
+    value: 120
+  batch_size:
+    value: 128
+  seed:
+    values: [0, 1, 2, 3, 4]
+  lr:
+    value: 0.1
+  warmup_epochs:
+    value: 5
+  min_lr:
+    value: 0.00001
+  weight_decay:
+    value: 0.0005
+  label_smoothing:
+    values: [0.0, 0.1]
+  prefix_mask_prob:
+    values: [0.0, 0.25, 0.5, 0.75, 0.85]
+  mrl_loss_mode:
+    values: [all]
+  sampled_prefix_distribution:
+    values: [uniform, inverse_sqrt_dim]
+  wandb_project:
+    value: mrl-borth
+  wandb_group:
+    value: cifar100-resnet18-mrl-sweep
+command:
+  - ${env}
+  - ${interpreter}
+  - ${program}
+  - --config-file
+  - train/rn50_configs/rn18_cifar100.yaml
+  - --model.mrl=1
+  - --data.root=${data_root}
+  - --logging.folder=${logging_folder}
+  - --training.epochs=${epochs}
+  - --training.batch_size=${batch_size}
+  - --validation.batch_size=${batch_size}
+  - --training.seed=${seed}
+  - --lr.lr=${lr}
+  - --lr.warmup_epochs=${warmup_epochs}
+  - --lr.min_lr=${min_lr}
+  - --training.weight_decay=${weight_decay}
+  - --training.label_smoothing=${label_smoothing}
+  - --model.prefix_mask_prob=${prefix_mask_prob}
+  - --training.mrl_loss_mode=${mrl_loss_mode}
+  - --training.sampled_prefix_distribution=${sampled_prefix_distribution}
+  - --wandb.enabled=1
+  - --wandb.project=${wandb_project}
+  - --wandb.group=${wandb_group}
+  - --wandb.tags=cifar100,resnet18,mrl,sweep

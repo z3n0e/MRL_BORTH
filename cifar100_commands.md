@@ -12,11 +12,30 @@ cd /home/sricci/Desktop/MRL_BORTH
 ./run_cifar100_experiments.sh
 ```
 
-This trains one standard MRL model, evaluates classification accuracy at every prefix dimension, and optionally computes retrieval metrics. CIFAR-100 data defaults to `$HOME/.cache/torchvision`.
+This trains one standard MRL ResNet-18-CIFAR model, evaluates classification accuracy at every prefix dimension, measures Neural Collapse metrics, and optionally computes retrieval metrics. CIFAR-100 data defaults to `$HOME/.cache/torchvision`.
 
 ```bash
 CIFAR100_DIR=/path/to/cifar100/root ./run_cifar100_experiments.sh
 ```
+
+W&B logging is enabled by default and is additive to the existing local logs:
+
+```bash
+WANDB_PROJECT=mrl-borth ./run_cifar100_experiments.sh
+```
+
+Disable W&B with `WANDB_ENABLED=0`.
+
+Training, classification eval, Neural Collapse, and retrieval are separate W&B jobs in one group. Metrics are namespaced as `train/*`, `eval/*`, `classification/*`, `nc/*`, and `retrieval/*`.
+
+## W&B Sweep
+
+```bash
+wandb sweep sweeps/cifar100_resnet18_sweep.yaml
+wandb agent <entity>/<project>/<sweep_id>
+```
+
+The sweep objective is `eval/top1/dim_512`. Update `data_root` in `sweeps/cifar100_resnet18_sweep.yaml` if needed.
 
 ## Prefix Masking
 
@@ -34,7 +53,7 @@ The default is `PREFIX_MASK_PROB=0.0`.
 cd train
 
 python train_imagenet.py \
-  --config-file rn50_configs/rn50_cifar100.yaml \
+  --config-file rn50_configs/rn18_cifar100.yaml \
   --model.mrl=1 \
   --model.prefix_mask_prob=0.1 \
   --data.root=/path/to/cifar100/root \
@@ -45,7 +64,7 @@ python train_imagenet.py \
 
 ```bash
 python train_imagenet.py \
-  --config-file rn50_configs/rn50_cifar100.yaml \
+  --config-file rn50_configs/rn18_cifar100.yaml \
   --model.efficient=1 \
   --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
@@ -60,6 +79,10 @@ python pytorch_inference.py \
   --path ../train/trainlogs/<run_id>/final_weights.pt \
   --dataset CIFAR100 \
   --data_root /path/to/cifar100/root \
+  --arch resnet18 \
+  --rep_size 512 \
+  --prefix-dims 8,16,32,64,128,256,512 \
+  --use_blurpool 0 \
   --mrl
 ```
 
@@ -78,6 +101,10 @@ python pytorch_inference.py \
   --dataset CIFAR100 \
   --data_root /path/to/cifar100/root \
   --retrieval_array_path ../retrieval_arrays \
+  --arch resnet18 \
+  --rep_size 512 \
+  --prefix-dims 8,16,32,64,128,256,512 \
+  --use_blurpool 0 \
   --mrl
 ```
 
@@ -90,15 +117,36 @@ python faiss_nn.py \
   --root ../retrieval_arrays \
   --dataset CIFAR100 \
   --model mrl \
+  --feature-config mrl1_e0_ff512 \
+  --rep-size 512 \
   --index-type exactl2 \
-  --k 2048
+  --k 2048 \
+  --dims 8 16 32 64 128 256 512
 
 python compute_metrics.py \
   --root ../retrieval_arrays \
   --dataset CIFAR100 \
   --model mrl \
+  --feature-config mrl1_e0_ff512 \
+  --rep-size 512 \
   --eval-config vanilla \
-  --index-type exactl2
+  --index-type exactl2 \
+  --dims 8 16 32 64 128 256 512
 ```
 
 The experiment runner writes retrieval summaries to `cifar100_runs/<run>/cifar100_retrieval_summary.csv`.
+
+## Neural Collapse Metrics
+
+```bash
+python cifar100_neural_collapse.py \
+  --path train/trainlogs/<run_id>/final_weights.pt \
+  --data-root /path/to/cifar100/root \
+  --arch resnet18 \
+  --rep-size 512 \
+  --prefix-dims 8,16,32,64,128,256,512 \
+  --output-csv cifar100_nc_metrics.csv \
+  --mrl
+```
+
+The full experiment runner writes these rows to `cifar100_runs/<run>/neural_collapse/cifar100_nc_metrics.csv`.

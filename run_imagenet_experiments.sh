@@ -9,12 +9,20 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 SEED=${SEED:-0}
-DETERMINISTIC=${DETERMINISTIC:-1}
+DETERMINISTIC=1
 export PYTHONHASHSEED="$SEED"
-export CUBLAS_WORKSPACE_CONFIG=${CUBLAS_WORKSPACE_CONFIG:-:4096:8}
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 IMAGENET_DIR=${IMAGENET_DIR:-}
 EXPERIMENT_DIR=${EXPERIMENT_DIR:-"$ROOT_DIR/imagenet_runs/imagenet_seed_${SEED}_$(date +%Y%m%d_%H%M%S)"}
+WANDB_ENABLED=${WANDB_ENABLED:-1}
+WANDB_PROJECT=${WANDB_PROJECT:-mrl-borth}
+WANDB_ENTITY=${WANDB_ENTITY:-}
+WANDB_GROUP=${WANDB_GROUP:-$(basename "$EXPERIMENT_DIR")}
+WANDB_TAGS=${WANDB_TAGS:-imagenet,mrl}
+WANDB_MODE=${WANDB_MODE:-}
+WANDB_DIR=${WANDB_DIR:-"$EXPERIMENT_DIR/wandb"}
+export WANDB_ENABLED WANDB_PROJECT WANDB_ENTITY WANDB_GROUP WANDB_TAGS WANDB_MODE WANDB_DIR
 
 if [[ -z "$IMAGENET_DIR" ]]; then
     echo "Set IMAGENET_DIR to the ImageNet root containing train/ and val/."
@@ -47,12 +55,15 @@ TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
 EVAL_DIR="$EXPERIMENT_DIR/eval"
 CHECKPOINT_DIR="$EXPERIMENT_DIR/checkpoints"
 
-mkdir -p "$TRAINLOG_DIR" "$EVAL_DIR" "$CHECKPOINT_DIR"
+mkdir -p "$TRAINLOG_DIR" "$EVAL_DIR" "$CHECKPOINT_DIR" "$WANDB_DIR"
 
 echo "ImageNet experiment directory: $EXPERIMENT_DIR"
 echo "Seed: $SEED"
 echo "Deterministic: $DETERMINISTIC"
 echo "ImageNet data root: $IMAGENET_DIR"
+echo "W&B enabled: $WANDB_ENABLED"
+echo "W&B project: $WANDB_PROJECT"
+echo "W&B group: $WANDB_GROUP"
 echo "MRL loss mode: $MRL_LOSS_MODE"
 echo "Prefix mask probability: $PREFIX_MASK_PROB"
 echo "Prefix mask scale: $PREFIX_MASK_SCALE"
@@ -78,6 +89,13 @@ write_manifest() {
         echo "val_batch_size=$VAL_BATCH_SIZE"
         echo "num_workers=$NUM_WORKERS"
         echo "eval_workers=$EVAL_WORKERS"
+        echo "wandb_enabled=$WANDB_ENABLED"
+        echo "wandb_project=$WANDB_PROJECT"
+        echo "wandb_entity=$WANDB_ENTITY"
+        echo "wandb_group=$WANDB_GROUP"
+        echo "wandb_tags=$WANDB_TAGS"
+        echo "wandb_mode=$WANDB_MODE"
+        echo "wandb_dir=$WANDB_DIR"
         echo "mrl_loss_mode=$MRL_LOSS_MODE"
         echo "sampled_prefix_distribution=$SAMPLED_PREFIX_DISTRIBUTION"
         echo "sampled_prefix_log_interval=$SAMPLED_PREFIX_LOG_INTERVAL"

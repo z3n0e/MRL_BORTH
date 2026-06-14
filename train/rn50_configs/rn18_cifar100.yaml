@@ -1,0 +1,40 @@
+data:
+  dataset: cifar100
+  root: ""
+  num_workers: 4
+  pin_memory: 1
+  prefetch_factor: 4
+logging:
+  folder: ./tmp/
+lr:
+  lr: 0.1
+  lr_schedule_type: cosine
+  warmup_epochs: 5
+  min_lr: 0.00001
+model:
+  arch: resnet18
+  fixed_feature: 512
+  nesting_start: 3
+  prefix_mask_prob: 0.0
+  prefix_mask_scale: inverted
+resolution:
+  end_ramp: 0
+  max_res: 32
+  min_res: 32
+  start_ramp: 0
+training:
+  batch_size: 128
+  bn_wd: 0
+  deterministic: 1
+  epochs: 120
+  label_smoothing: 0.1
+  momentum: 0.9
+  nesterov: 1
+  optimizer: sgd
+  seed: 0
+  weight_decay: 0.0005
+  use_blurpool: 0
+validation:
+  batch_size: 128
+  lr_tta: 1
+  resolution: 32

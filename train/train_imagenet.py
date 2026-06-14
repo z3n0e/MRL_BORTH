@@ -2,6 +2,7 @@
 ResNet training entry point for CIFAR-100 and ImageNet MRL.
 """
 import json
+import math
 import os
 import random
 import sys
@@ -10,7 +11,11 @@ from argparse import ArgumentParser
 from pathlib import Path
 from uuid import uuid4
 
-sys.path.append("../")
+# Training is deterministic by policy; set this before importing torch.
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT_DIR))
 
 import numpy as np
 import torch as ch
@@ -24,7 +29,9 @@ from torchvision import datasets, models
 from torchvision.transforms import v2
 from tqdm import tqdm
 
+from cifar_resnet import build_power2_prefix_dims, make_torchvision_model, maybe_apply_cifar_stem
 from MRL import FixedFeatureLayer, Matryoshka_CE_Loss, MRL_Linear_Layer
+from wandb_utils import env_default, env_flag, init_wandb_run, wandb_finish, wandb_log
 
 
 Section("model", "model details").params(
@@ -56,15 +63,28 @@ Section("data", "data related settings").params(
 Section("lr", "lr scheduling").params(
 	step_ratio=Param(float, "learning rate step ratio", default=0.1),
 	step_length=Param(int, "learning rate step length", default=30),
-	lr_schedule_type=Param(OneOf(["step", "cyclic", "constant"]), default="cyclic"),
+	lr_schedule_type=Param(OneOf(["step", "cyclic", "constant", "cosine"]), default="cyclic"),
 	lr=Param(float, "learning rate", default=0.5),
 	lr_peak_epoch=Param(int, "epoch at which LR peaks", default=2),
+	warmup_epochs=Param(int, "linear warmup epochs for cosine LR", default=0),
+	min_lr=Param(float, "minimum LR for cosine LR", default=0.0),
 )
 
 Section("logging", "logging settings").params(
 	folder=Param(str, "log location", required=True),
 	run_name=Param(str, "optional run folder name", default=""),
 	log_level=Param(int, "0 only epoch-end logs, 1 progress, 2 verbose progress", default=1),
+)
+
+Section("wandb", "optional W&B side-channel logging").params(
+	enabled=Param(int, "enable W&B logging? (1/0)", default=env_flag("WANDB_ENABLED", 1)),
+	project=Param(str, "W&B project", default=env_default("WANDB_PROJECT", "mrl-borth")),
+	entity=Param(str, "W&B entity", default=env_default("WANDB_ENTITY", "")),
+	group=Param(str, "W&B group", default=env_default("WANDB_GROUP", "")),
+	name=Param(str, "W&B run name", default=env_default("WANDB_NAME", "")),
+	tags=Param(str, "comma-separated W&B tags", default=env_default("WANDB_TAGS", "")),
+	mode=Param(str, "W&B mode, e.g. online/offline/disabled", default=env_default("WANDB_MODE", "")),
+	dir=Param(str, "W&B local directory", default=env_default("WANDB_DIR", "")),
 )
 
 Section("validation", "validation settings").params(
@@ -79,13 +99,14 @@ Section("training", "training hyperparameters").params(
 	batch_size=Param(int, "training batch size", default=512),
 	optimizer=Param(And(str, OneOf(["sgd"])), "optimizer", default="sgd"),
 	momentum=Param(float, "SGD momentum", default=0.9),
+	nesterov=Param(int, "use SGD Nesterov momentum? (1/0)", default=0),
 	weight_decay=Param(float, "weight decay", default=4e-5),
 	bn_wd=Param(int, "apply weight decay to norm layers? (1/0)", default=0),
 	epochs=Param(int, "number of epochs", default=30),
 	label_smoothing=Param(float, "label smoothing", default=0.1),
 	use_blurpool=Param(int, "use blurpool? (1/0)", default=0),
 	seed=Param(int, "random seed", default=0),
-	deterministic=Param(int, "enable deterministic PyTorch/CUDA behavior? (1/0)", default=0),
+	deterministic=Param(int, "training is always deterministic; retained for config compatibility", default=1),
 	mrl_loss_mode=Param(And(str, OneOf(["all", "sampled_prefix"])), "MRL loss mode", default="all"),
 	sampled_prefix_distribution=Param(
 		And(str, OneOf(["uniform", "inverse_dim", "inverse_sqrt_dim"])),
@@ -120,7 +141,7 @@ def set_reproducibility(seed, deterministic):
 	ch.cuda.manual_seed_all(seed)
 
 	if deterministic:
-		os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+		os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 		ch.backends.cudnn.benchmark = False
 		ch.backends.cudnn.deterministic = True
 		if hasattr(ch.backends, "cuda") and hasattr(ch.backends.cuda, "matmul"):
@@ -129,7 +150,7 @@ def set_reproducibility(seed, deterministic):
 			ch.backends.cudnn.allow_tf32 = False
 		if hasattr(ch, "use_deterministic_algorithms"):
 			try:
-				ch.use_deterministic_algorithms(True, warn_only=True)
+				ch.use_deterministic_algorithms(True, warn_only=False)
 			except TypeError:
 				ch.use_deterministic_algorithms(True)
 	else:
@@ -166,6 +187,22 @@ def get_cyclic_lr(epoch, lr, epochs, lr_peak_epoch):
 	return np.interp([epoch], xs, ys)[0]
 
 
+@param("lr.lr")
+@param("training.epochs")
+@param("lr.warmup_epochs")
+@param("lr.min_lr")
+def get_cosine_lr(epoch, lr, epochs, warmup_epochs, min_lr):
+	if epoch >= epochs:
+		return min_lr
+	if warmup_epochs > 0 and epoch < warmup_epochs:
+		alpha = epoch / max(warmup_epochs, 1)
+		return min_lr + alpha * (lr - min_lr)
+
+	cosine_epochs = max(1, epochs - warmup_epochs)
+	progress = min(max((epoch - warmup_epochs) / cosine_epochs, 0.0), 1.0)
+	return min_lr + 0.5 * (lr - min_lr) * (1.0 + math.cos(math.pi * progress))
+
+
 class BlurPoolConv2d(ch.nn.Module):
 	def __init__(self, conv):
 		super().__init__()
@@ -192,19 +229,6 @@ def apply_blurpool(mod):
 			setattr(mod, name, BlurPoolConv2d(child))
 		else:
 			apply_blurpool(child)
-
-
-def make_torchvision_model(arch, pretrained):
-	model_fn = getattr(models, arch)
-	if pretrained:
-		try:
-			return model_fn(weights="DEFAULT")
-		except TypeError:
-			return model_fn(pretrained=True)
-	try:
-		return model_fn(weights=None)
-	except TypeError:
-		return model_fn(pretrained=False)
 
 
 def topk_correct(logits, target, k):
@@ -237,8 +261,10 @@ class ImageNetTrainer:
 	):
 		self.all_params = get_current_config()
 		self.seed = seed
-		self.deterministic = bool(deterministic)
-		set_reproducibility(seed, self.deterministic)
+		if not bool(deterministic):
+			print("Training determinism is enforced; ignoring --training.deterministic=0")
+		self.deterministic = True
+		set_reproducibility(seed, True)
 		self.device = ch.device("cuda" if ch.cuda.is_available() else "cpu")
 		self.num_gpus = ch.cuda.device_count() if self.device.type == "cuda" else 0
 		self.efficient = bool(efficient)
@@ -253,6 +279,7 @@ class ImageNetTrainer:
 		self.dataset_config = DATASET_CONFIGS[dataset]
 		self.num_classes = self.dataset_config["num_classes"]
 		self.uid = str(uuid4())
+		self.wandb_run = None
 
 		if self.prefix_mask_prob > 0.0 and not self.nesting:
 			raise ValueError("--model.prefix_mask_prob requires --model.mrl=1 or --model.efficient=1")
@@ -262,6 +289,7 @@ class ImageNetTrainer:
 		self.model, self.scaler = self.create_model_and_scaler()
 		self.create_optimizer()
 		self.initialize_logger()
+		self.initialize_wandb()
 
 	@param("lr.lr_schedule_type")
 	def get_lr(self, epoch, lr_schedule_type):
@@ -269,6 +297,7 @@ class ImageNetTrainer:
 			"cyclic": get_cyclic_lr,
 			"step": get_step_lr,
 			"constant": get_constant_lr,
+			"cosine": get_cosine_lr,
 		}
 		return lr_schedules[lr_schedule_type](epoch)
 
@@ -286,21 +315,10 @@ class ImageNetTrainer:
 		return int(np.round(interp[0] / 32)) * 32
 
 	def build_nesting_list(self, feature_dim):
-		start_dim = 2 ** self.nesting_start
-		if start_dim > feature_dim:
-			raise ValueError(
-				f"smallest nesting dimension {start_dim} exceeds feature dimension {feature_dim}"
-			)
-		dims = []
-		dim = start_dim
-		while dim < feature_dim:
-			dims.append(dim)
-			dim *= 2
-		if not dims or dims[-1] != feature_dim:
-			dims.append(feature_dim)
-		return dims
+		return build_power2_prefix_dims(feature_dim, self.nesting_start)
 
 	@param("training.momentum")
+	@param("training.nesterov")
 	@param("training.optimizer")
 	@param("training.weight_decay")
 	@param("training.bn_wd")
@@ -310,6 +328,7 @@ class ImageNetTrainer:
 	def create_optimizer(
 		self,
 		momentum,
+		nesterov,
 		optimizer,
 		weight_decay,
 		bn_wd,
@@ -340,9 +359,20 @@ class ImageNetTrainer:
 			{"params": decay_params, "weight_decay": weight_decay},
 		]
 		try:
-			self.optimizer = ch.optim.SGD(param_groups, lr=1, momentum=momentum, foreach=True)
+			self.optimizer = ch.optim.SGD(
+				param_groups,
+				lr=1,
+				momentum=momentum,
+				nesterov=bool(nesterov),
+				foreach=True,
+			)
 		except TypeError:
-			self.optimizer = ch.optim.SGD(param_groups, lr=1, momentum=momentum)
+			self.optimizer = ch.optim.SGD(
+				param_groups,
+				lr=1,
+				momentum=momentum,
+				nesterov=bool(nesterov),
+			)
 
 		if self.nesting:
 			self.loss = Matryoshka_CE_Loss(
@@ -467,7 +497,10 @@ class ImageNetTrainer:
 	def create_model_and_scaler(self, arch, pretrained, use_blurpool):
 		scaler = GradScaler(enabled=self.device.type == "cuda")
 		model = make_torchvision_model(arch, bool(pretrained))
+		model = maybe_apply_cifar_stem(model, self.dataset, arch)
 		feature_dim = model.fc.in_features
+		if self.dataset == "cifar100" and arch == "resnet18":
+			print("Using CIFAR ResNet-18 stem: conv1=3x3 stride 1, maxpool=Identity")
 
 		if self.nesting:
 			self.nesting_list = self.build_nesting_list(feature_dim)
@@ -702,8 +735,45 @@ class ImageNetTrainer:
 		log_dict.update({key: value for key, value in stats.items() if key != "loss"})
 		log_dict.update(extra_dict)
 		self.log(log_dict)
+		self.log_wandb_epoch(stats, log_dict)
 		self.print_validation_summary(log_dict)
 		return stats
+
+	def log_wandb_epoch(self, stats, log_dict):
+		if self.wandb_run is None:
+			return
+		epoch = log_dict.get("epoch")
+		payload = {}
+		if epoch is not None:
+			payload["epoch"] = epoch
+		if "train_loss" in log_dict:
+			payload["train/loss"] = log_dict["train_loss"]
+		if "current_lr" in log_dict:
+			payload["train/lr"] = log_dict["current_lr"]
+		if "loss" in stats:
+			payload["eval/loss"] = stats["loss"]
+		if "val_time" in log_dict:
+			payload["eval/time_sec"] = log_dict["val_time"]
+
+		if self.nesting:
+			for dim in self.nesting_list:
+				top1_key = f"top_1_{dim}"
+				top5_key = f"top_5_{dim}"
+				if top1_key in log_dict:
+					payload[f"eval/top1/dim_{dim}"] = log_dict[top1_key]
+				if top5_key in log_dict:
+					payload[f"eval/top5/dim_{dim}"] = log_dict[top5_key]
+		else:
+			if "top_1" in log_dict:
+				payload["eval/top1"] = log_dict["top_1"]
+			if "top_5" in log_dict:
+				payload["eval/top5"] = log_dict["top_5"]
+
+		counts_by_dim = log_dict.get("sampled_prefix_counts_by_dim", {})
+		for dim, count in counts_by_dim.items():
+			payload[f"mrl/sampled_prefix/count_dim_{dim}"] = count
+
+		wandb_log(self.wandb_run, payload)
 
 	def print_validation_summary(self, log_dict):
 		epoch = log_dict.get("epoch", "?")
@@ -748,6 +818,39 @@ class ImageNetTrainer:
 		if startup_log:
 			self.log(startup_log)
 
+	@param("wandb.enabled")
+	@param("wandb.project")
+	@param("wandb.entity")
+	@param("wandb.group")
+	@param("wandb.name")
+	@param("wandb.tags")
+	@param("wandb.mode")
+	@param("wandb.dir")
+	def initialize_wandb(self, enabled, project, entity, group, name, tags, mode, dir):
+		if not enabled:
+			return
+		params = {".".join(k): self.all_params[k] for k in self.all_params.entries.keys()}
+		params.update({
+			"logging.log_folder": str(self.log_folder),
+			"dataset.num_classes": self.num_classes,
+			"model.nesting_list": self.nesting_list,
+			"model.uid": self.uid,
+		})
+		run_name = name or self.log_folder.name
+		run_group = group or f"{self.dataset}_{params.get('model.arch', 'model')}_seed_{self.seed}"
+		self.wandb_run = init_wandb_run(
+			bool(enabled),
+			project=project,
+			entity=entity,
+			group=run_group,
+			name=run_name,
+			job_type="train",
+			tags=tags,
+			mode=mode,
+			dir=dir or str(self.log_folder),
+			config=params,
+		)
+
 	def log(self, content):
 		print(f"=> Log: {content}")
 		cur_time = time.time()
@@ -764,13 +867,16 @@ class ImageNetTrainer:
 	@param("training.path")
 	def exec(cls, eval_only, path=None):
 		trainer = cls()
-		if eval_only:
-			print("Loading model...")
-			trainer.load_model_state(path)
-			print("Loading complete.")
-			trainer.eval_and_log()
-		else:
-			trainer.train()
+		try:
+			if eval_only:
+				print("Loading model...")
+				trainer.load_model_state(path)
+				print("Loading complete.")
+				trainer.eval_and_log()
+			else:
+				trainer.train()
+		finally:
+			wandb_finish(trainer.wandb_run)
 
 
 def make_config(quiet=False):

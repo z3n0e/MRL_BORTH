@@ -14,11 +14,12 @@ sys.path.append("../")
 import torch
 import torchvision
 from torchvision import datasets, transforms
-from torchvision.models import resnet50
 from tqdm import tqdm
 
+from cifar_resnet import make_torchvision_model, maybe_apply_cifar_stem, parse_prefix_dims
 from MRL import FixedFeatureLayer, MRL_Linear_Layer
 from utils import apply_blurpool, evaluate_model, generate_retrieval_data, get_ckpt, load_from_old_ckpt
+from wandb_utils import env_default, env_flag, init_wandb_run, wandb_finish, wandb_log
 
 
 def configure_multiprocessing_start_method():
@@ -48,7 +49,7 @@ except ImportError:
 BATCH_SIZE = 256
 IMG_SIZE = 256
 CENTER_CROP_SIZE = 224
-NESTING_LIST = [2**i for i in range(3, 12)]
+DEFAULT_NESTING_START = 3
 ROOT = "../../IMAGENET/"
 DATASET_CONFIGS = {
 	"imagenet": {
@@ -84,7 +85,7 @@ def set_eval_reproducibility(seed, deterministic):
 	torch.manual_seed(seed)
 	torch.cuda.manual_seed_all(seed)
 	if deterministic:
-		os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+		os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 		torch.backends.cudnn.benchmark = False
 		torch.backends.cudnn.deterministic = True
 		if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
@@ -93,7 +94,7 @@ def set_eval_reproducibility(seed, deterministic):
 			torch.backends.cudnn.allow_tf32 = False
 		if hasattr(torch, "use_deterministic_algorithms"):
 			try:
-				torch.use_deterministic_algorithms(True, warn_only=True)
+				torch.use_deterministic_algorithms(True, warn_only=False)
 			except TypeError:
 				torch.use_deterministic_algorithms(True)
 	else:
@@ -179,19 +180,36 @@ def retrieval_datasets(args, data_root, test_transform):
 
 
 def build_model(args, num_classes, device):
-	model = resnet50(weights=None)
+	model = make_torchvision_model(args.arch, pretrained=False)
+	model = maybe_apply_cifar_stem(model, args.dataset, args.arch)
+	feature_dim = model.fc.in_features
+	if args.rep_size > feature_dim:
+		if args.rep_size == 2048:
+			print(f"Adjusting rep_size from 2048 to feature_dim={feature_dim} for {args.arch}")
+			args.rep_size = feature_dim
+		else:
+			raise ValueError(f"rep_size={args.rep_size} exceeds model feature dimension {feature_dim}")
+
+	nesting_list = parse_prefix_dims(args.prefix_dims, feature_dim, args.nesting_start)
+	args.resolved_nesting_list = nesting_list
+	if args.dataset.lower() == "cifar100" and args.arch == "resnet18":
+		print("Using CIFAR ResNet-18 stem: conv1=3x3 stride 1, maxpool=Identity")
+	print(f"Model feature_dim: {feature_dim}")
+	print(f"MRL nesting dimensions: {nesting_list}")
+
 	is_mrl_model = args.mrl or args.efficient
 	if args.old_ckpt:
 		if is_mrl_model:
-			model = load_from_old_ckpt(model, args.efficient, NESTING_LIST, num_classes=num_classes)
+			model = load_from_old_ckpt(model, args.efficient, nesting_list, num_classes=num_classes)
 		else:
 			model.fc = FixedFeatureLayer(args.rep_size, num_classes)
 	elif is_mrl_model:
-		model.fc = MRL_Linear_Layer(NESTING_LIST, num_classes=num_classes, efficient=args.efficient)
+		model.fc = MRL_Linear_Layer(nesting_list, num_classes=num_classes, efficient=args.efficient)
 	else:
 		model.fc = FixedFeatureLayer(args.rep_size, num_classes)
 
-	apply_blurpool(model)
+	if args.use_blurpool:
+		apply_blurpool(model)
 	model.load_state_dict(get_ckpt(args.path))
 	model = model.to(device)
 	if device.type == "cuda":
@@ -203,9 +221,13 @@ def build_model(args, num_classes, device):
 parser = ArgumentParser()
 parser.add_argument("--efficient", action="store_true", help="use MRL-E")
 parser.add_argument("--mrl", action="store_true", help="use MRL")
+parser.add_argument("--arch", type=str, default="resnet50", help="TorchVision architecture, e.g. resnet50 or resnet18")
 parser.add_argument("--rep_size", type=int, default=2048, help="representation size for fixed-feature model")
+parser.add_argument("--prefix-dims", type=str, default="", help="comma-separated MRL prefix dimensions")
+parser.add_argument("--nesting-start", type=int, default=DEFAULT_NESTING_START, help="smallest MRL prefix is 2**nesting_start")
 parser.add_argument("--path", type=str, required=True, help="path to .pt model checkpoint")
 parser.add_argument("--old_ckpt", action="store_true", help="load original MRL checkpoint naming")
+parser.add_argument("--use_blurpool", type=int, default=1, help="apply blurpool before loading checkpoint? (1/0)")
 parser.add_argument("--workers", type=int, default=12, help="number of dataloader workers")
 parser.add_argument("--tta", action="store_true", help="left-right flip test-time augmentation")
 parser.add_argument("--dataset", type=str, default="V1", help="Benchmarks: V1/V2/A/Sketch/R/CIFAR100")
@@ -220,6 +242,14 @@ parser.add_argument("--save_predictions", action="store_true", help="save predic
 parser.add_argument("--retrieval", action="store_true", help="dump retrieval feature arrays")
 parser.add_argument("--random_sample_dim", type=int, default=4202000, help="optional database random sample size")
 parser.add_argument("--retrieval_array_path", default="", type=str, help="path to save retrieval arrays")
+parser.add_argument("--wandb-enabled", type=int, default=env_flag("WANDB_ENABLED", 1), help="enable W&B logging? (1/0)")
+parser.add_argument("--wandb-project", default=env_default("WANDB_PROJECT", "mrl-borth"))
+parser.add_argument("--wandb-entity", default=env_default("WANDB_ENTITY", ""))
+parser.add_argument("--wandb-group", default=env_default("WANDB_GROUP", ""))
+parser.add_argument("--wandb-name", default=env_default("WANDB_NAME", ""))
+parser.add_argument("--wandb-tags", default=env_default("WANDB_TAGS", ""))
+parser.add_argument("--wandb-mode", default=env_default("WANDB_MODE", ""))
+parser.add_argument("--wandb-dir", default=env_default("WANDB_DIR", ""))
 
 args = parser.parse_args()
 set_eval_reproducibility(args.seed, args.deterministic)
@@ -230,6 +260,18 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model = build_model(args, num_classes, device)
 is_nested_model = args.mrl or args.efficient
+wandb_run = init_wandb_run(
+	bool(args.wandb_enabled),
+	project=args.wandb_project,
+	entity=args.wandb_entity,
+	group=args.wandb_group or f"{args.dataset}_{args.arch}_seed_{args.seed}",
+	name=args.wandb_name or f"{method_name(args)}_{args.dataset}_classification",
+	job_type="classification_eval" if not args.retrieval else "retrieval_arrays",
+	tags=args.wandb_tags,
+	mode=args.wandb_mode,
+	dir=args.wandb_dir,
+	config={**vars(args), "num_classes": num_classes},
+)
 
 normalize = transforms.Normalize(mean=dataset_config["mean"], std=dataset_config["std"])
 test_transform = transforms.Compose([
@@ -242,7 +284,7 @@ test_transform = transforms.Compose([
 if not args.retrieval:
 	dataset = classification_dataset(args, data_root, test_transform)
 	dataloader = make_loader(dataset, args.workers, args.seed)
-	nesting_list = NESTING_LIST if is_nested_model else None
+	nesting_list = args.resolved_nesting_list if is_nested_model else None
 	_, top1_acc, top5_acc, total_time, num_images, _, softmax_probs, gt, logits = evaluate_model(
 		model,
 		dataloader,
@@ -257,7 +299,7 @@ if not args.retrieval:
 	confidence, predictions = torch.max(softmax_probs, dim=-1)
 	if is_nested_model:
 		metric_rows = []
-		for nesting in NESTING_LIST:
+		for nesting in nesting_list:
 			metric_rows.append({
 				"rep_size": int(nesting),
 				"top1": float(top1_acc[nesting]),
@@ -283,10 +325,12 @@ if not args.retrieval:
 	metrics = {
 		"dataset": args.dataset,
 		"checkpoint": args.path,
+		"arch": args.arch,
 		"method": method_name(args),
 		"mrl": bool(args.mrl or args.efficient),
 		"efficient": bool(args.efficient),
 		"rep_size": int(args.rep_size),
+		"prefix_dims": nesting_list if is_nested_model else [int(args.rep_size)],
 		"tta": bool(args.tta),
 		"seed": int(args.seed),
 		"deterministic": bool(args.deterministic),
@@ -296,6 +340,21 @@ if not args.retrieval:
 	}
 	if args.metrics_output:
 		save_metrics(metrics, args.metrics_output)
+
+	wandb_log(wandb_run, {
+		"classification/num_images": int(num_images),
+		"classification/total_time_sec": float(total_time),
+		"classification/ms_per_image": float(1000.0 * total_time / num_images),
+	})
+	for row in metric_rows:
+		dim = row["rep_size"]
+		wandb_log(wandb_run, {
+			"dim": int(dim),
+			"classification/top1": row["top1"],
+			"classification/top5": row["top5"],
+			f"classification/top1/dim_{dim}": row["top1"],
+			f"classification/top5/dim_{dim}": row["top5"],
+		})
 
 	save_string = (
 		f"method={method_name(args)}_efficient={args.efficient}_"
@@ -323,3 +382,5 @@ else:
 	config = args.dataset + "_train_mrl" + str(mrl_flag) + "_e" + str(int(args.efficient)) + "_ff" + str(int(args.rep_size))
 	print("Retrieval Config: " + config)
 	generate_retrieval_data(model, database_loader, config, args.random_sample_dim, args.rep_size, args.retrieval_array_path)
+
+wandb_finish(wandb_run)

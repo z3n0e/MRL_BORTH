@@ -1,8 +1,12 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+from wandb_utils import env_default, env_flag, init_wandb_run, wandb_finish, wandb_log
 
 try:
     from retrieval.common import (
@@ -40,6 +44,14 @@ def parse_args():
     parser.add_argument("--neighbor-k", dest="nn_k", type=int, default=2048, help="Shortlist length used in vanilla neighbor filenames")
     parser.add_argument("--neighbors-path", type=Path, default=None, help="Direct neighbor CSV path; use with one dimension/config")
     parser.add_argument("--output-json", type=Path, default=None, help="Optional JSON file for metrics")
+    parser.add_argument("--wandb-enabled", type=int, default=env_flag("WANDB_ENABLED", 1), help="enable W&B logging? (1/0)")
+    parser.add_argument("--wandb-project", default=env_default("WANDB_PROJECT", "mrl-borth"))
+    parser.add_argument("--wandb-entity", default=env_default("WANDB_ENTITY", ""))
+    parser.add_argument("--wandb-group", default=env_default("WANDB_GROUP", ""))
+    parser.add_argument("--wandb-name", default=env_default("WANDB_NAME", ""))
+    parser.add_argument("--wandb-tags", default=env_default("WANDB_TAGS", ""))
+    parser.add_argument("--wandb-mode", default=env_default("WANDB_MODE", ""))
+    parser.add_argument("--wandb-dir", default=env_default("WANDB_DIR", ""))
     return parser.parse_args()
 
 
@@ -116,6 +128,18 @@ def main():
         "index_type": args.index_type,
         "metrics": [],
     }
+    wandb_run = init_wandb_run(
+        bool(args.wandb_enabled),
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        group=args.wandb_group or f"{args.dataset}_{args.model}_retrieval",
+        name=args.wandb_name or f"{args.model}_{args.dataset}_retrieval",
+        job_type="retrieval",
+        tags=args.wandb_tags,
+        mode=args.wandb_mode,
+        dir=args.wandb_dir,
+        config={**vars(args), "resolved_feature_config": resolved_config},
+    )
 
     for dim in dims:
         path = neighbors_path(args, dim)
@@ -127,6 +151,11 @@ def main():
         top1 = top1_accuracy(query_labels, db_labels, neighbors)
         print(f"\nNeighbors: {path}")
         print(f"Top1: {top1:.6f}")
+        wandb_log(wandb_run, {
+            "dim": int(dim),
+            "retrieval/top1": top1,
+            f"retrieval/top1/dim_{dim}": top1,
+        })
 
         valid_shortlist = [k for k in args.shortlist if k <= neighbors.shape[1]]
         if len(valid_shortlist) != len(args.shortlist):
@@ -143,6 +172,19 @@ def main():
                 "neighbors_path": str(path),
                 **{key: value for key, value in row.items() if key != "k"},
             })
+            k = int(row["k"])
+            wandb_log(wandb_run, {
+                "dim": int(dim),
+                "k": k,
+                f"retrieval/mAP_at_{k}": row["mAP"],
+                f"retrieval/precision_at_{k}": row["precision"],
+                f"retrieval/recall_at_{k}": row["recall"],
+                f"retrieval/top{k}": row["topk"],
+                f"retrieval/mAP_at_{k}/dim_{dim}": row["mAP"],
+                f"retrieval/precision_at_{k}/dim_{dim}": row["precision"],
+                f"retrieval/recall_at_{k}/dim_{dim}": row["recall"],
+                f"retrieval/top{k}/dim_{dim}": row["topk"],
+            })
 
     if args.output_json is not None:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -150,6 +192,7 @@ def main():
             json.dump(output, handle, indent=2)
         print(f"\nWrote metrics: {args.output_json}")
 
+    wandb_finish(wandb_run)
     return 0 if output["metrics"] else 1
 
 
