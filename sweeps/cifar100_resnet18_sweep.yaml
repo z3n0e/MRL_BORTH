@@ -18,7 +18,7 @@ parameters:
   validation.batch_size:
     value: 128
   training.seed:
-    values: [0, 1, 2, 3, 4]
+    values: [56, 123, 999, 876, 456]
   lr.lr:
     value: 0.1
   lr.warmup_epochs:
