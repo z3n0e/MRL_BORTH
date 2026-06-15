@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import getpass
 import json
 import os
 import shlex
@@ -31,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run train, classification, NC/GNC, and retrieval for the CIFAR-100 ResNet-18 W&B sweep."
     )
-    add_arg(parser, "data.root", default=str(Path.home() / ".cache/torchvision"))
+    add_arg(parser, "data.root", default="auto")
     add_arg(parser, "data.num_workers", type=int, default=4)
     parser.add_argument("--output_root", default="./cifar100_sweep_runs")
 
@@ -87,6 +88,42 @@ def force_deterministic(args: argparse.Namespace) -> None:
     args.training_deterministic = 1
     os.environ["PYTHONHASHSEED"] = str(args.training_seed)
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+
+def default_data_root() -> Path:
+    for env_name in ("CIFAR100_DIR", "TORCHVISION_DATA_ROOT"):
+        value = os.environ.get(env_name)
+        if value:
+            return Path(value).expanduser()
+
+    username = getpass.getuser()
+    for base in (Path("/scratch/a100/users") / username, Path("/scratch/users") / username):
+        if base.exists() and os.access(base, os.W_OK):
+            return base / ".cache" / "torchvision"
+
+    return Path.home() / ".cache" / "torchvision"
+
+
+def resolve_data_root(args: argparse.Namespace) -> None:
+    raw_value = str(args.data_root).strip()
+    if raw_value.lower() in {"", "auto", "default", "user"}:
+        path = default_data_root()
+    else:
+        path = Path(raw_value).expanduser()
+
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        if not os.access(path, os.W_OK):
+            raise PermissionError(f"data.root is not writable: {path}")
+    except PermissionError:
+        fallback = default_data_root()
+        print(f"Cannot write data.root={path}; falling back to {fallback}")
+        fallback.mkdir(parents=True, exist_ok=True)
+        if not os.access(fallback, os.W_OK):
+            raise PermissionError(f"fallback data.root is not writable: {fallback}")
+        path = fallback
+
+    args.data_root = str(path.resolve())
 
 
 def parse_int_list(value: str) -> list[int]:
@@ -562,6 +599,7 @@ def write_manifest(args: argparse.Namespace, paths: dict[str, Path], metrics_fil
 def main() -> int:
     args = parse_args()
     force_deterministic(args)
+    resolve_data_root(args)
     paths = make_paths(args)
     wandb_dir = args.wandb_dir or str(paths["root"] / "wandb")
     Path(wandb_dir).mkdir(parents=True, exist_ok=True)

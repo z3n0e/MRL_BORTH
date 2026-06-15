@@ -6,13 +6,13 @@ metric:
   goal: maximize
 parameters:
   data.root:
-    value: /home/bagnoli/.cache/torchvision
+    value: auto
   output_root:
     value: ./cifar100_sweep_runs
   model.mrl:
     value: 1
   training.epochs:
-    value: 120
+    value: 90
   training.batch_size:
     value: 128
   validation.batch_size:
