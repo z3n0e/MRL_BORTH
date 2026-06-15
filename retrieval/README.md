@@ -60,6 +60,6 @@ python compute_metrics.py \
   --shortlist 10 25 50 100
 ```
 
-Metrics include mAP@k, precision@k, recall@k, and top-k retrieval accuracy. Recall is computed from the number of database examples with the query label, so the same code supports ImageNet and CIFAR-100.
+Metrics include mAP@k, precision@k, recall@k, top-k retrieval accuracy, CMC@1, and CMC@5. Recall is computed from the number of database examples with the query label, so the same code supports ImageNet and CIFAR-100.
 
 Use `--model mrl_e` for MRL-E feature arrays. Fixed-feature compatibility is available with `--model ff --rep-size <dim>`.

@@ -18,6 +18,7 @@ from uuid import uuid4
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
+from neural_collapse.constants import CORE_NC_METRIC_KEYS
 from wandb_utils import init_wandb_run, wandb_finish, wandb_log
 
 POLL_SECONDS = 10.0
@@ -87,7 +88,12 @@ def stop_child(process: subprocess.Popen, signum: int, stage: str) -> None:
 
 
 def add_arg(parser: argparse.ArgumentParser, name: str, **kwargs) -> None:
-    parser.add_argument(f"--{name}", dest=name.replace(".", "_"), **kwargs)
+    flags = [f"--{name}"]
+    hyphen_name = name.replace(".", "-").replace("_", "-")
+    hyphen_flag = f"--{hyphen_name}"
+    if hyphen_flag not in flags:
+        flags.append(hyphen_flag)
+    parser.add_argument(*flags, dest=name.replace(".", "_"), **kwargs)
 
 
 def parse_args() -> argparse.Namespace:
@@ -96,7 +102,7 @@ def parse_args() -> argparse.Namespace:
     )
     add_arg(parser, "data.root", default="auto")
     add_arg(parser, "data.num_workers", type=int, default=4)
-    parser.add_argument("--output_root", default="./cifar100_sweep_runs")
+    parser.add_argument("--output_root", "--output-root", default="./cifar100_sweep_runs")
 
     add_arg(parser, "model.mrl", type=int, default=1)
     add_arg(parser, "model.arch", default="resnet18")
@@ -357,6 +363,8 @@ def train_nc_payload(record: dict) -> dict:
     for key, value in record.items():
         if key in skip_keys:
             continue
+        if key not in CORE_NC_METRIC_KEYS:
+            continue
         value = numeric_value(value)
         if value is None:
             continue
@@ -557,6 +565,8 @@ def log_neural_collapse(path: Path, run, metrics_file: Path) -> None:
         for key, value in row.items():
             if key in {"name", "dataset", "arch", "mode", "split"}:
                 continue
+            if key not in CORE_NC_METRIC_KEYS:
+                continue
             value = numeric_value(value)
             if value is None:
                 continue
@@ -651,16 +661,23 @@ def log_retrieval(path: Path, run, metrics_file: Path) -> None:
         dim = int(row["dim"])
         k = int(row["k"])
         if dim not in seen_top1_dims:
+            cmc_payload = {}
+            for rank in (1, 5):
+                key = f"cmc@{rank}"
+                if key in row:
+                    cmc_payload[f"retrieval/cmc_at_{rank}"] = row.get(key)
+                    cmc_payload[f"retrieval/cmc_at_{rank}/dim_{dim}"] = row.get(key)
             append_metric(run, metrics_file, "retrieval_top1", {
                 "dim": dim,
                 "retrieval/top1": row.get("top1"),
                 f"retrieval/top1/dim_{dim}": row.get("top1"),
+                **cmc_payload,
             })
             seen_top1_dims.add(dim)
         payload = {"dim": dim, "k": k}
         for key, value in row.items():
             value = numeric_value(value)
-            if value is None or key in {"dim", "k"}:
+            if value is None or key in {"dim", "k", "cmc@1", "cmc@5"}:
                 continue
             payload[f"retrieval/{key}_at_{k}"] = value
             payload[f"retrieval/{key}_at_{k}/dim_{dim}"] = value
@@ -676,6 +693,11 @@ def log_retrieval(path: Path, run, metrics_file: Path) -> None:
         if "topk" in row:
             payload[f"retrieval/top{k}"] = row.get("topk")
             payload[f"retrieval/top{k}/dim_{dim}"] = row.get("topk")
+        for rank in (1, 5):
+            key = f"cmc@{rank}"
+            if key in row:
+                payload[f"retrieval/cmc_at_{rank}"] = row.get(key)
+                payload[f"retrieval/cmc_at_{rank}/dim_{dim}"] = row.get(key)
         append_metric(run, metrics_file, "retrieval", payload)
 
 
@@ -698,6 +720,8 @@ def write_retrieval_summary(metrics_json: Path, summary_csv: Path, args: argpars
             "dim": metric.get("dim", ""),
             "k": metric.get("k", ""),
             "top1": metric.get("top1", ""),
+            "cmc@1": metric.get("cmc@1", ""),
+            "cmc@5": metric.get("cmc@5", ""),
             "mAP": metric.get("mAP", ""),
             "precision": metric.get("precision", ""),
             "recall": metric.get("recall", ""),
@@ -712,7 +736,7 @@ def write_retrieval_summary(metrics_json: Path, summary_csv: Path, args: argpars
         "training_prefix_mask_prob",
         "training_prefix_mask_scale",
         "feature_config", "eval_config", "index_type",
-        "dim", "k", "top1", "mAP", "precision", "recall", "topk",
+        "dim", "k", "top1", "cmc@1", "cmc@5", "mAP", "precision", "recall", "topk",
         "neighbors_path",
     ]
     with summary_csv.open("w", newline="") as handle:

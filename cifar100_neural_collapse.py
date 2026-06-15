@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import os
 import random
 import sys
@@ -15,20 +16,14 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).resolve().parent
 sys.path.append(str(ROOT_DIR))
 sys.path.append(str(ROOT_DIR / "inference"))
-sys.path.append(str(ROOT_DIR / "mnist_neural_collapse"))
 
 from cifar_resnet import make_torchvision_model, maybe_apply_cifar_stem, parse_prefix_dims
 from MRL import FixedFeatureLayer, MRL_Linear_Layer
-from src.nc_metrics import (
-	compute_class_means,
-	nc_metrics,
-	ufm_geometry_metrics,
-)
+from neural_collapse import CORE_NC_METRIC_KEYS, evaluate_nc_rows
 from utils import apply_blurpool
 from wandb_utils import env_default, env_flag, init_wandb_run, wandb_finish, wandb_log
 
@@ -36,6 +31,15 @@ from wandb_utils import env_default, env_flag, init_wandb_run, wandb_finish, wan
 CIFAR100_MEAN = (0.5071, 0.4867, 0.4408)
 CIFAR100_STD = (0.2675, 0.2565, 0.2761)
 CIFAR100_NUM_CLASSES = 100
+LOGGER = logging.getLogger("cifar100_neural_collapse")
+
+
+def configure_logging() -> None:
+	logging.basicConfig(
+		level=logging.INFO,
+		format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+		datefmt="%H:%M:%S",
+	)
 
 
 def set_reproducibility(seed: int, deterministic: bool) -> None:
@@ -122,10 +126,6 @@ def load_checkpoint(path: Path) -> Dict[str, torch.Tensor]:
 	return checkpoint
 
 
-def base_model(model: nn.Module) -> nn.Module:
-	return model.module if hasattr(model, "module") else model
-
-
 def method_name(args: argparse.Namespace) -> str:
 	if args.efficient:
 		return "mrl_e"
@@ -165,83 +165,6 @@ def build_model(
 	return model, prefix_dims, feature_dim
 
 
-def topk_correct(logits: torch.Tensor, target: torch.Tensor, k: int) -> int:
-	k = min(int(k), logits.shape[1])
-	pred = logits.topk(k=k, dim=1, largest=True, sorted=True).indices
-	return int(pred.eq(target.view(-1, 1)).any(dim=1).sum().item())
-
-
-def collect_features_and_logits(
-	model: nn.Module,
-	loader: DataLoader,
-	device: torch.device,
-	prefix_dims: List[int],
-	is_nested: bool,
-) -> Tuple[
-	torch.Tensor,
-	torch.Tensor,
-	Dict[int, torch.Tensor],
-	Dict[int, float],
-	Dict[int, float],
-	Dict[int, float],
-]:
-	model.eval()
-	features_by_batch: List[torch.Tensor] = []
-	labels_by_batch: List[torch.Tensor] = []
-	logits_by_dim: Dict[int, List[torch.Tensor]] = {dim: [] for dim in prefix_dims}
-	loss_sum = {dim: 0.0 for dim in prefix_dims}
-	top1_sum = {dim: 0 for dim in prefix_dims}
-	top5_sum = {dim: 0 for dim in prefix_dims}
-	seen = 0
-	activation: Dict[str, torch.Tensor] = {}
-
-	def hook(_module, _inputs, output):
-		activation["avgpool"] = output.detach()
-
-	handle = base_model(model).avgpool.register_forward_hook(hook)
-	try:
-		with torch.inference_mode():
-			for images, target in tqdm(loader, desc="collect", leave=False):
-				images = images.to(device, non_blocking=True)
-				target = target.to(device, non_blocking=True)
-				if device.type == "cuda":
-					images = images.contiguous(memory_format=torch.channels_last)
-
-				output = model(images)
-				features = activation.pop("avgpool").flatten(1)
-				features_by_batch.append(features.cpu())
-				labels_by_batch.append(target.cpu())
-
-				outputs = tuple(output) if is_nested else (output,)
-				batch_size = target.numel()
-				seen += batch_size
-				for dim, logits in zip(prefix_dims, outputs):
-					logits_by_dim[dim].append(logits.cpu())
-					loss_sum[dim] += float(F.cross_entropy(logits, target, reduction="sum").item())
-					top1_sum[dim] += topk_correct(logits, target, 1)
-					top5_sum[dim] += topk_correct(logits, target, 5)
-	finally:
-		handle.remove()
-
-	features = torch.cat(features_by_batch, dim=0)
-	labels = torch.cat(labels_by_batch, dim=0)
-	logits_cat = {dim: torch.cat(parts, dim=0) for dim, parts in logits_by_dim.items()}
-	loss = {dim: loss_sum[dim] / seen for dim in prefix_dims}
-	top1 = {dim: top1_sum[dim] / seen for dim in prefix_dims}
-	top5 = {dim: top5_sum[dim] / seen for dim in prefix_dims}
-	return features, labels, logits_cat, loss, top1, top5
-
-
-def classifier_weight(model: nn.Module, dim: int) -> torch.Tensor:
-	fc = base_model(model).fc
-	if isinstance(fc, MRL_Linear_Layer):
-		if fc.efficient:
-			return fc.nesting_classifier_0.weight[:, :dim]
-		idx = fc.nesting_list.index(dim)
-		return getattr(fc, f"nesting_classifier_{idx}").weight
-	return fc.weight[:, :dim]
-
-
 def evaluate_nc(
 	model: nn.Module,
 	loader: DataLoader,
@@ -252,58 +175,20 @@ def evaluate_nc(
 	args: argparse.Namespace,
 	feature_dim: int,
 ) -> List[Dict[str, float | int | str | bool]]:
-	features, labels, logits_by_dim, loss_by_dim, top1_by_dim, top5_by_dim = collect_features_and_logits(
-		model,
-		loader,
-		device,
-		prefix_dims,
-		is_nested,
+	return evaluate_nc_rows(
+		model=model,
+		loader=loader,
+		device=device,
+		prefix_dims=prefix_dims,
+		is_nested=is_nested,
+		split=split,
+		num_classes=CIFAR100_NUM_CLASSES,
+		dataset="cifar100",
+		arch=args.arch,
+		mode=method_name(args),
+		feature_dim=feature_dim,
+		cifar_stem=args.arch == "resnet18",
 	)
-	rows: List[Dict[str, float | int | str | bool]] = []
-
-	for dim in prefix_dims:
-		z_dim = features[:, :dim]
-		weight_dim = classifier_weight(model, dim).detach().cpu()
-		class_means, _ = compute_class_means(z_dim, labels, CIFAR100_NUM_CLASSES)
-		metrics = nc_metrics(
-			features=z_dim,
-			labels=labels,
-			classifier_weight=weight_dim,
-			num_classes=CIFAR100_NUM_CLASSES,
-			logits=logits_by_dim[dim],
-		)
-		ufm_metrics = ufm_geometry_metrics(class_means, weight_dim)
-		row: Dict[str, float | int | str | bool] = {
-			"name": f"{method_name(args)}_{split}_d{dim}",
-			"dataset": "cifar100",
-			"arch": args.arch,
-			"cifar_stem": args.arch == "resnet18",
-			"mode": method_name(args),
-			"split": split,
-			"prefix_dim": int(dim),
-			"model_feature_dim": int(feature_dim),
-			"loss": float(loss_by_dim[dim]),
-			"accuracy": float(top1_by_dim[dim]),
-			"top5": float(top5_by_dim[dim]),
-		}
-		row.update(metrics)
-		for key, value in ufm_metrics.items():
-			if key == "accuracy":
-				row["prototype_accuracy"] = value
-			elif key == "nc1":
-				row["prototype_nc1"] = value
-			elif key == "nc3_align_mean":
-				row["ufm_nc3_align_mean"] = value
-			elif key == "nc3_align_std":
-				row["ufm_nc3_align_std"] = value
-			elif key == "ncm_acc":
-				row["prototype_ncm_acc"] = value
-			else:
-				row[key] = value
-		row["prototype_ce"] = row["ce"]
-		rows.append(row)
-
-	return rows
 
 
 def write_csv(path: Path, rows: List[Dict[str, float | int | str | bool]]) -> None:
@@ -367,6 +252,8 @@ def log_nc_rows_to_wandb(wandb_run, rows: List[Dict[str, float | int | str | boo
 		for key, value in row.items():
 			if key in {"name", "dataset", "arch", "mode", "split"}:
 				continue
+			if key not in CORE_NC_METRIC_KEYS:
+				continue
 			if isinstance(value, bool):
 				payload[f"nc/{split}/{key}"] = int(value)
 				payload[f"nc/{split}/{key}/dim_{dim}"] = int(value)
@@ -377,16 +264,17 @@ def log_nc_rows_to_wandb(wandb_run, rows: List[Dict[str, float | int | str | boo
 
 
 def main() -> int:
+	configure_logging()
 	args = parse_args()
 	set_reproducibility(args.seed, args.deterministic)
 	device = torch.device(args.device)
 	model, prefix_dims, feature_dim = build_model(args, device)
 
-	print(f"Model: {args.arch}")
-	print("CIFAR stem: " + ("yes" if args.arch == "resnet18" else "no"))
-	print(f"Feature dim: {feature_dim}")
-	print(f"Prefix dims: {prefix_dims}")
-	print(f"Mode: {method_name(args)}")
+	LOGGER.info("Model: %s", args.arch)
+	LOGGER.info("CIFAR stem: %s", "yes" if args.arch == "resnet18" else "no")
+	LOGGER.info("Feature dim: %s", feature_dim)
+	LOGGER.info("Prefix dims: %s", prefix_dims)
+	LOGGER.info("Mode: %s", method_name(args))
 	wandb_run = init_wandb_run(
 		bool(args.wandb_enabled),
 		project=args.wandb_project,
@@ -414,7 +302,7 @@ def main() -> int:
 
 	all_rows: List[Dict[str, float | int | str | bool]] = []
 	for split in args.splits:
-		print(f"Evaluating Neural Collapse metrics on CIFAR-100 {split} split")
+		LOGGER.info("Evaluating Neural Collapse metrics on CIFAR-100 %s split", split)
 		all_rows.extend(
 			evaluate_nc(
 				model,
@@ -433,7 +321,7 @@ def main() -> int:
 		write_json(Path(args.output_json), all_rows)
 	log_nc_rows_to_wandb(wandb_run, all_rows)
 	wandb_finish(wandb_run)
-	print(f"Wrote {len(all_rows)} rows to {args.output_csv}")
+	LOGGER.info("Wrote %d rows to %s", len(all_rows), args.output_csv)
 	return 0
 
 

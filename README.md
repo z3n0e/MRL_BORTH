@@ -59,11 +59,28 @@ The default is `--model.prefix_mask_prob=0.0` to preserve baseline accuracy unle
 
 ### CIFAR-100
 
+Recommended unified CLI:
+
+```bash
+python main.py full
+```
+
+Run individual stages when needed:
+
+```bash
+python main.py train
+python main.py eval --run-dir cifar100_runs/<run_id>
+python main.py nc --run-dir cifar100_runs/<run_id>
+python main.py retrieval --run-dir cifar100_runs/<run_id>
+```
+
+The older scripts remain supported:
+
 ```bash
 ./run_cifar100_experiments.sh
 ```
 
-This uses TorchVision ResNet-18 with the CIFAR stem (`3x3` stride-1 `conv1`, no initial maxpool), CIFAR-100 augmentations, 512-dimensional pooled features, prefixes `[8, 16, 32, 64, 128, 256, 512]`, SGD/Nesterov, cosine LR with 5 warmup epochs, and label smoothing `0.1`.
+These commands use TorchVision ResNet-18 with the CIFAR stem (`3x3` stride-1 `conv1`, no initial maxpool), CIFAR-100 augmentations, 512-dimensional pooled features, prefixes `[8, 16, 32, 64, 128, 256, 512]`, SGD/Nesterov, cosine LR with 5 warmup epochs, and label smoothing `0.1`.
 
 Useful overrides:
 
@@ -91,7 +108,8 @@ wandb sweep sweeps/cifar100_resnet18_sweep.yaml
 wandb agent <entity>/<project>/<sweep_id>
 ```
 
-The sweep runs the full CIFAR-100 experiment wrapper: train, classification eval, training-time Neural Collapse/GNC every 10 completed epochs, and final retrieval after training. It optimizes `eval/top1/dim_512` and logs `train/*`, `eval/*`, `classification/*`, `nc/*`, `gnc/*`, `nc_history/*`, `gnc_history/*`, and `retrieval/*` into the same W&B sweep run. Edit `data.root` in [sweeps/cifar100_resnet18_sweep.yaml](/home/sricci/Desktop/MRL_BORTH/sweeps/cifar100_resnet18_sweep.yaml:1) if your CIFAR-100 cache lives somewhere else.
+The sweep runs the full CIFAR-100 experiment wrapper: train, classification eval, training-time Neural Collapse/GNC every 10 completed epochs, and final retrieval after training. It optimizes `eval/top1/dim_512` and logs `train/*`, `eval/*`, `classification/*`, `nc/*`, `gnc/*`, `nc_history/*`, `gnc_history/*`, and `retrieval/*` into the same W&B sweep run. Edit `data-root` in [sweeps/cifar100_resnet18_sweep.yaml](/home/sricci/Desktop/MRL_BORTH/sweeps/cifar100_resnet18_sweep.yaml:1) if your CIFAR-100 cache lives somewhere else.
+The sweep now calls `python main.py full`, so sweep parameters use the same hyphenated CLI names as the manual workflow.
 
 ### ImageNet
 
@@ -182,9 +200,20 @@ python compute_metrics.py \
   --dims 8 16 32 64 128 256 512
 ```
 
+Retrieval metrics include mAP@k, precision@k, recall@k, top-k accuracy, and CMC@1/CMC@5.
+
 ## Neural Collapse
 
-CIFAR-100 runs measure the same classical and generalized Neural Collapse diagnostics used by the MNIST experiments:
+CIFAR-100 runs measure a compact NC/GNC metric set from the local `neural_collapse` package:
+
+- `nc1_within_to_between`
+- `nc2_etf_error`
+- `nc3_alignment`
+- `nc4_ncc_mismatch`
+- `gnc2_weight_margin`
+- `gnc2_class_mean_margin`
+- `gnc3_alignment_error`
+- `effective_rank`
 
 ```bash
 python cifar100_neural_collapse.py \

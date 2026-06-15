@@ -14,10 +14,12 @@ from MRL import (
     mrl_sampling_probabilities,
 )
 from retrieval.metrics import (
+    cmc_at_k,
     compute_retrieval_metrics_at_k,
     relevant_counts_by_label,
     top1_accuracy,
 )
+from neural_collapse.metrics import nc_metrics
 
 
 def test_forward():
@@ -264,13 +266,12 @@ def test_idempotency():
     assert torch.allclose(loss_loop, loss_broadcast)
 
 
-def test_relevant_counts_by_label_excludes_self_matches():
+def test_relevant_counts_by_label_counts_database_labels():
     db_labels = np.array([[0], [0], [1], [1], [1]])
-    query_labels = np.array([[0], [1], [2]])
 
-    counts = relevant_counts_by_label(query_labels, db_labels)
+    counts = relevant_counts_by_label(db_labels)
 
-    assert counts.tolist() == [2, 3, 0]
+    assert counts == {0: 2, 1: 3}
 
 
 def test_retrieval_metrics_at_k():
@@ -286,7 +287,21 @@ def test_retrieval_metrics_at_k():
     assert metrics["precision"] == pytest.approx(0.5)
     assert metrics["recall"] == pytest.approx(0.75)
     assert metrics["topk"] == pytest.approx(1.0)
-    assert metrics["mAP"] == pytest.approx((0.5 + ((1.0 + 2.0 / 3.0) / 2.0)) / 2.0)
+    assert metrics["mAP"] == pytest.approx((1.0 / 3.0 + (1.0 + 2.0 / 3.0) / 3.0) / 2.0)
+
+
+def test_cmc_at_k():
+    query_labels = np.array([[0], [1], [2]])
+    db_labels = np.array([[1], [0], [2], [1]])
+    neighbors = np.array([
+        [0, 1, 2],
+        [1, 3, 0],
+        [0, 3, 2],
+    ])
+
+    assert cmc_at_k(query_labels, db_labels, neighbors, 1) == pytest.approx(0.0)
+    assert cmc_at_k(query_labels, db_labels, neighbors, 2) == pytest.approx(2.0 / 3.0)
+    assert cmc_at_k(query_labels, db_labels, neighbors, 3) == pytest.approx(1.0)
 
 
 def test_top1_accuracy():
@@ -299,3 +314,87 @@ def test_top1_accuracy():
     ])
 
     assert top1_accuracy(query_labels, db_labels, neighbors) == pytest.approx(1.0)
+
+
+def test_nc_metrics_collapsed_features_have_low_nc1_and_zero_nc4():
+    features = torch.tensor([
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [-0.5, 0.8660254],
+        [-0.5, 0.8660254],
+        [-0.5, -0.8660254],
+        [-0.5, -0.8660254],
+    ])
+    labels = torch.tensor([0, 0, 1, 1, 2, 2])
+    classifier_weight = torch.tensor([
+        [1.0, 0.0],
+        [-0.5, 0.8660254],
+        [-0.5, -0.8660254],
+    ])
+    logits = features @ classifier_weight.t()
+
+    metrics = nc_metrics(features, labels, classifier_weight, num_classes=3, logits=logits)
+
+    assert metrics["nc1_within_to_between"] == pytest.approx(0.0, abs=1e-6)
+    assert metrics["nc4_ncc_mismatch"] == pytest.approx(0.0)
+    assert metrics["nc2_etf_feasible"] == pytest.approx(1.0)
+    assert "nc1" in metrics
+    assert "nc3_align_mean" in metrics
+    assert "gnc2_weight_margin" in metrics
+    assert "gnc2_class_mean_margin" in metrics
+
+
+def test_nc_metrics_noncollapsed_features_increase_nc1():
+    collapsed = torch.tensor([
+        [1.0, 0.0],
+        [1.0, 0.0],
+        [-0.5, 0.8660254],
+        [-0.5, 0.8660254],
+        [-0.5, -0.8660254],
+        [-0.5, -0.8660254],
+    ])
+    noise = torch.tensor([
+        [0.30, 0.10],
+        [-0.25, -0.20],
+        [0.20, -0.15],
+        [-0.30, 0.12],
+        [0.15, 0.25],
+        [-0.18, -0.22],
+    ])
+    labels = torch.tensor([0, 0, 1, 1, 2, 2])
+    classifier_weight = torch.tensor([
+        [1.0, 0.0],
+        [-0.5, 0.8660254],
+        [-0.5, -0.8660254],
+    ])
+
+    collapsed_metrics = nc_metrics(
+        collapsed,
+        labels,
+        classifier_weight,
+        num_classes=3,
+        logits=collapsed @ classifier_weight.t(),
+    )
+    noisy = collapsed + noise
+    noisy_metrics = nc_metrics(
+        noisy,
+        labels,
+        classifier_weight,
+        num_classes=3,
+        logits=noisy @ classifier_weight.t(),
+    )
+
+    assert noisy_metrics["nc1_within_to_between"] > collapsed_metrics["nc1_within_to_between"]
+
+
+def test_nc2_etf_infeasible_below_class_threshold():
+    torch.manual_seed(0)
+    num_classes = 10
+    features = torch.randn(num_classes * 2, 8)
+    labels = torch.arange(num_classes).repeat_interleave(2)
+    classifier_weight = torch.randn(num_classes, 8)
+
+    metrics = nc_metrics(features, labels, classifier_weight, num_classes=num_classes)
+
+    assert metrics["nc2_etf_feasible"] == pytest.approx(0.0)
+    assert np.isnan(metrics["nc2_etf_error"])

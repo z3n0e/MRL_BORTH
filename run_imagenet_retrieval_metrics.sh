@@ -236,6 +236,8 @@ for path in sorted(metrics_dir.glob("*.json")):
             "dim": metric.get("dim", ""),
             "k": metric.get("k", ""),
             "top1": metric.get("top1", ""),
+            "cmc@1": metric.get("cmc@1", ""),
+            "cmc@5": metric.get("cmc@5", ""),
             "mAP": metric.get("mAP", ""),
             "precision": metric.get("precision", ""),
             "recall": metric.get("recall", ""),
@@ -250,7 +252,7 @@ fieldnames = [
     "training_prefix_mask_prob",
     "training_prefix_mask_scale",
     "feature_config", "eval_config", "index_type",
-    "dim", "k", "top1", "mAP", "precision", "recall", "topk",
+    "dim", "k", "top1", "cmc@1", "cmc@5", "mAP", "precision", "recall", "topk",
     "neighbors_path",
 ]
 

@@ -16,7 +16,7 @@ try:
         normalize_model_name,
         resolve_feature_pair,
     )
-    from retrieval.metrics import compute_retrieval_metrics, top1_accuracy
+    from retrieval.metrics import cmc_at_k, compute_retrieval_metrics, top1_accuracy
 except ImportError:
     from common import (
         DEFAULT_NESTING_LIST,
@@ -25,7 +25,7 @@ except ImportError:
         normalize_model_name,
         resolve_feature_pair,
     )
-    from metrics import compute_retrieval_metrics, top1_accuracy
+    from metrics import cmc_at_k, compute_retrieval_metrics, top1_accuracy
 
 
 def parse_args():
@@ -149,12 +149,24 @@ def main():
 
         neighbors = load_csv_int_matrix(path)
         top1 = top1_accuracy(query_labels, db_labels, neighbors)
+        cmc_values = {
+            rank: cmc_at_k(query_labels, db_labels, neighbors, rank)
+            for rank in (1, 5)
+            if rank <= neighbors.shape[1]
+        }
         print(f"\nNeighbors: {path}")
         print(f"Top1: {top1:.6f}")
+        for rank, value in cmc_values.items():
+            print(f"CMC@{rank}: {value:.6f}")
+        cmc_payload = {}
+        for rank, value in cmc_values.items():
+            cmc_payload[f"retrieval/cmc_at_{rank}"] = value
+            cmc_payload[f"retrieval/cmc_at_{rank}/dim_{dim}"] = value
         wandb_log(wandb_run, {
             "dim": int(dim),
             "retrieval/top1": top1,
             f"retrieval/top1/dim_{dim}": top1,
+            **cmc_payload,
         })
 
         valid_shortlist = [k for k in args.shortlist if k <= neighbors.shape[1]]
@@ -169,6 +181,7 @@ def main():
                 "dim": int(dim),
                 "k": int(row["k"]),
                 "top1": top1,
+                **{f"cmc@{rank}": value for rank, value in cmc_values.items()},
                 "neighbors_path": str(path),
                 **{key: value for key, value in row.items() if key != "k"},
             })

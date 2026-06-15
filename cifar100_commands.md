@@ -8,6 +8,23 @@ cd /home/sricci/Desktop/MRL_BORTH
 
 ## Full Workflow
 
+Preferred unified CLI:
+
+```bash
+python main.py full
+```
+
+Run individual stages:
+
+```bash
+python main.py train
+python main.py eval --run-dir cifar100_runs/<run_id>
+python main.py nc --run-dir cifar100_runs/<run_id>
+python main.py retrieval --run-dir cifar100_runs/<run_id>
+```
+
+The older wrapper is still supported:
+
 ```bash
 ./run_cifar100_experiments.sh
 ```
@@ -35,7 +52,7 @@ wandb sweep sweeps/cifar100_resnet18_sweep.yaml
 wandb agent <entity>/<project>/<sweep_id>
 ```
 
-The sweep runs the full experiment: train, classification eval, Neural Collapse/GNC, and retrieval. The objective is `eval/top1/dim_512`. Update `data.root` in `sweeps/cifar100_resnet18_sweep.yaml` if needed.
+The sweep runs `python main.py full`: train, classification eval, Neural Collapse/GNC, and retrieval. The objective is `eval/top1/dim_512`. Update `data-root` in `sweeps/cifar100_resnet18_sweep.yaml` if needed.
 
 ## Prefix Masking
 
@@ -134,9 +151,11 @@ python compute_metrics.py \
   --dims 8 16 32 64 128 256 512
 ```
 
-The experiment runner writes retrieval summaries to `cifar100_runs/<run>/cifar100_retrieval_summary.csv`.
+The experiment runner writes retrieval summaries to `cifar100_runs/<run>/cifar100_retrieval_summary.csv`. Retrieval JSON and CSV summaries include `cmc@1` and `cmc@5` in addition to the existing mAP, precision, recall, and top-k fields.
 
 ## Neural Collapse Metrics
+
+The compact NC/GNC output focuses on `nc1_within_to_between`, `nc2_etf_error`, `nc3_alignment`, `nc4_ncc_mismatch`, `gnc2_weight_margin`, `gnc2_class_mean_margin`, `gnc3_alignment_error`, and `effective_rank`. Compatibility aliases such as `nc1`, `nc3_align_mean`, and `nc4_ncc_mismatch` are retained in CSV/JSON rows.
 
 ```bash
 python cifar100_neural_collapse.py \

@@ -17,7 +17,6 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
-sys.path.append(str(ROOT_DIR / "mnist_neural_collapse"))
 
 import numpy as np
 import torch as ch
@@ -33,7 +32,7 @@ from tqdm import tqdm
 
 from cifar_resnet import build_power2_prefix_dims, make_torchvision_model, maybe_apply_cifar_stem
 from MRL import FixedFeatureLayer, Matryoshka_CE_Loss, MRL_Linear_Layer
-from src.nc_metrics import compute_class_means, nc_metrics, ufm_geometry_metrics
+from neural_collapse import CORE_NC_METRIC_KEYS, evaluate_nc_rows
 from wandb_utils import env_default, env_flag, init_wandb_run, wandb_finish, wandb_log
 
 
@@ -681,119 +680,24 @@ class ImageNetTrainer:
 			return list(self.nesting_list)
 		return [int(self.base_model().fc.in_features)]
 
-	def classifier_weight(self, dim):
-		fc = self.base_model().fc
-		if isinstance(fc, MRL_Linear_Layer):
-			if fc.efficient:
-				return fc.nesting_classifier_0.weight[:, :dim]
-			idx = fc.nesting_list.index(dim)
-			return getattr(fc, f"nesting_classifier_{idx}").weight
-		return fc.weight[:, :dim]
-
-	def collect_nc_features_and_logits(self, loader, prefix_dims):
-		self.model.eval()
-		features_by_batch = []
-		labels_by_batch = []
-		logits_by_dim = {dim: [] for dim in prefix_dims}
-		loss_sum = {dim: 0.0 for dim in prefix_dims}
-		top1_sum = {dim: 0 for dim in prefix_dims}
-		top5_sum = {dim: 0 for dim in prefix_dims}
-		seen = 0
-		activation = {}
-
-		def hook(_module, _inputs, output):
-			activation["avgpool"] = output.detach()
-
-		handle = self.base_model().avgpool.register_forward_hook(hook)
-		try:
-			with ch.inference_mode():
-				for images, target in tqdm(loader, desc="nc collect", leave=False):
-					images = images.to(self.device, non_blocking=True)
-					target = target.to(self.device, non_blocking=True)
-					if self.device.type == "cuda":
-						images = images.contiguous(memory_format=ch.channels_last)
-
-					output = self.model(images)
-					features = activation.pop("avgpool").flatten(1)
-					features_by_batch.append(features.cpu())
-					labels_by_batch.append(target.cpu())
-
-					outputs = tuple(output) if not isinstance(output, ch.Tensor) else (output,)
-					if len(outputs) != len(prefix_dims):
-						raise RuntimeError(
-							f"Expected {len(prefix_dims)} NC logits, got {len(outputs)}"
-						)
-					batch_size = target.numel()
-					seen += batch_size
-					for dim, logits in zip(prefix_dims, outputs):
-						logits_by_dim[dim].append(logits.cpu())
-						loss_sum[dim] += float(F.cross_entropy(logits, target, reduction="sum").item())
-						top1_sum[dim] += topk_correct(logits, target, 1)
-						top5_sum[dim] += topk_correct(logits, target, 5)
-		finally:
-			handle.remove()
-
-		features = ch.cat(features_by_batch, dim=0)
-		labels = ch.cat(labels_by_batch, dim=0)
-		logits_cat = {dim: ch.cat(parts, dim=0) for dim, parts in logits_by_dim.items()}
-		loss = {dim: loss_sum[dim] / seen for dim in prefix_dims}
-		top1 = {dim: top1_sum[dim] / seen for dim in prefix_dims}
-		top5 = {dim: top5_sum[dim] / seen for dim in prefix_dims}
-		return features, labels, logits_cat, loss, top1, top5
-
 	def evaluate_nc_split(self, split, loader, completed_epoch, train_loss=None):
-		prefix_dims = self.nc_prefix_dims()
-		features, labels, logits_by_dim, loss_by_dim, top1_by_dim, top5_by_dim = (
-			self.collect_nc_features_and_logits(loader, prefix_dims)
+		return evaluate_nc_rows(
+			model=self.model,
+			loader=loader,
+			device=self.device,
+			prefix_dims=self.nc_prefix_dims(),
+			is_nested=self.nesting,
+			split=split,
+			num_classes=self.num_classes,
+			dataset=self.dataset,
+			arch=self.arch,
+			mode=self.method_name(),
+			feature_dim=self.feature_dim,
+			cifar_stem=self.dataset == "cifar100" and self.arch == "resnet18",
+			epoch=completed_epoch,
+			train_loss=train_loss,
+			event="neural_collapse",
 		)
-		rows = []
-
-		for dim in prefix_dims:
-			z_dim = features[:, :dim]
-			weight_dim = self.classifier_weight(dim).detach().cpu()
-			class_means, _ = compute_class_means(z_dim, labels, self.num_classes)
-			metrics = nc_metrics(
-				features=z_dim,
-				labels=labels,
-				classifier_weight=weight_dim,
-				num_classes=self.num_classes,
-				logits=logits_by_dim[dim],
-			)
-			ufm_metrics = ufm_geometry_metrics(class_means, weight_dim)
-			row = {
-				"event": "neural_collapse",
-				"name": f"{self.method_name()}_{split}_epoch{completed_epoch}_d{dim}",
-				"dataset": self.dataset,
-				"arch": self.arch,
-				"cifar_stem": int(self.dataset == "cifar100" and self.arch == "resnet18"),
-				"mode": self.method_name(),
-				"epoch": int(completed_epoch),
-				"split": split,
-				"prefix_dim": int(dim),
-				"model_feature_dim": int(self.feature_dim),
-				"loss": float(loss_by_dim[dim]),
-				"accuracy": float(top1_by_dim[dim]),
-				"top5": float(top5_by_dim[dim]),
-			}
-			if train_loss is not None:
-				row["train_loss"] = float(train_loss)
-			row.update(metrics)
-			for key, value in ufm_metrics.items():
-				if key == "accuracy":
-					row["prototype_accuracy"] = value
-				elif key == "nc1":
-					row["prototype_nc1"] = value
-				elif key == "nc3_align_mean":
-					row["ufm_nc3_align_mean"] = value
-				elif key == "nc3_align_std":
-					row["ufm_nc3_align_std"] = value
-				elif key == "ncm_acc":
-					row["prototype_ncm_acc"] = value
-				else:
-					row[key] = value
-			row["prototype_ce"] = row["ce"]
-			rows.append(row)
-		return rows
 
 	def append_nc_rows(self, rows):
 		if not rows:
@@ -828,6 +732,8 @@ class ImageNetTrainer:
 		}
 		for key, value in row.items():
 			if key in skip:
+				continue
+			if key not in CORE_NC_METRIC_KEYS:
 				continue
 			if isinstance(value, bool):
 				value = int(value)

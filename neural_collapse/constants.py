@@ -1,0 +1,15 @@
+CORE_NC_METRIC_KEYS = {
+    "loss",
+    "accuracy",
+    "top5",
+    "train_loss",
+    "nc1_within_to_between",
+    "nc2_etf_error",
+    "nc2_etf_feasible",
+    "nc3_alignment",
+    "nc4_ncc_mismatch",
+    "gnc2_weight_margin",
+    "gnc2_class_mean_margin",
+    "gnc3_alignment_error",
+    "effective_rank",
+}

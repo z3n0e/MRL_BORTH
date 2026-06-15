@@ -32,6 +32,18 @@ def top1_accuracy(query_labels, db_labels, neighbors):
     return float(np.mean(top1_labels == query_labels))
 
 
+def cmc_at_k(query_labels, db_labels, neighbors, k):
+    """Cumulative Matching Characteristic at rank k for single-label retrieval."""
+    query_labels = labels_to_1d(query_labels)
+    db_labels = labels_to_1d(db_labels)
+    neighbors = neighbors_to_2d(neighbors)
+    k = int(k)
+    _validate_shapes(query_labels, db_labels, neighbors, k)
+    retrieved_labels = db_labels[neighbors[:, :k]]
+    matches = retrieved_labels == query_labels.reshape(-1, 1)
+    return float(np.mean(matches.any(axis=1)))
+
+
 def compute_retrieval_metrics_at_k(query_labels, db_labels, neighbors, k):
     """
     Compute the repository's retrieval metrics for a k-NN shortlist.

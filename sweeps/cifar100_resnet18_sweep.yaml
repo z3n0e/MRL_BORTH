@@ -1,56 +1,81 @@
-program: scripts/cifar100_resnet18_full_sweep.py
+program: main.py
 name: cifar100-resnet18-mrl
 method: bayes
 metric:
   name: eval/top1/dim_512
   goal: maximize
 parameters:
-  data.root:
+  data-root:
     value: auto
-  output_root:
+  output-root:
     value: ./cifar100_sweep_runs
-  model.mrl:
-    value: 1
-  training.epochs:
+  feature-dim:
+    value: 512
+  prefix-dims:
+    value: 8,16,32,64,128,256,512
+  epochs:
     value: 90
-  training.batch_size:
+  train-batch-size:
     value: 128
-  validation.batch_size:
+  val-batch-size:
     value: 128
-  training.seed:
+  seed:
     values: [56, 123, 999, 876, 456]
-  lr.lr:
+  lr:
     value: 0.1
-  lr.warmup_epochs:
+  warmup-epochs:
     value: 5
-  lr.min_lr:
+  min-lr:
     value: 0.00001
-  training.weight_decay:
+  weight-decay:
     value: 0.0005
-  training.label_smoothing:
+  label-smoothing:
     values: [0.0, 0.1]
-  model.prefix_mask_prob:
+  prefix-mask-prob:
     values: [0.0, 0.25, 0.5, 0.75, 0.85]
-  training.mrl_loss_mode:
+  prefix-mask-scale:
+    value: inverted
+  mrl-loss-mode:
     values: [all]
-  training.sampled_prefix_distribution:
+  sampled-prefix-distribution:
     values: [uniform, inverse_sqrt_dim]
-  nc.enabled:
+  sampled-prefix-log-interval:
+    value: 100
+  eval-workers:
+    value: 4
+  nc-enabled:
     value: 1
-  nc.interval:
+  nc-interval:
     value: 10
-  nc.splits:
+  nc-splits:
     value: train,test
-  wandb.enabled:
+  nc-workers:
+    value: 4
+  nc-batch-size:
+    value: 128
+  index-type:
+    value: exactl2
+  neighbor-k:
+    value: 2048
+  shortlist:
+    value: 1,5,10,25,50,100
+  use-gpu:
     value: 1
-  wandb.project:
+  rebuild-index:
+    value: 0
+  force-arrays:
+    value: 0
+  wandb-enabled:
+    value: 1
+  wandb-project:
     value: mrl-borth
-  wandb.group:
+  wandb-group:
     value: cifar100-resnet18-mrl-sweep
-  wandb.tags:
-    value: cifar100,resnet18,mrl,sweep
+  wandb-tags:
+    value: cifar100,resnet18,mrl,sweep,main-cli
 command:
   - ${env}
   - ${interpreter}
   - ${program}
+  - full
   - ${args}
