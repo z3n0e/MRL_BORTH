@@ -35,6 +35,12 @@ parameters:
     values: [all]
   training.sampled_prefix_distribution:
     values: [uniform, inverse_sqrt_dim]
+  nc.enabled:
+    value: 1
+  nc.interval:
+    value: 10
+  nc.splits:
+    value: train,test
   wandb.enabled:
     value: 1
   wandb.project:

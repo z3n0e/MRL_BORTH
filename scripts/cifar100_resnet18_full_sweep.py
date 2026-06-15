@@ -6,6 +6,7 @@ import csv
 import getpass
 import json
 import os
+import signal
 import shlex
 import shutil
 import subprocess
@@ -20,8 +21,69 @@ sys.path.append(str(ROOT_DIR))
 from wandb_utils import init_wandb_run, wandb_finish, wandb_log
 
 POLL_SECONDS = 10.0
+CHILD_SHUTDOWN_TIMEOUT = 30.0
 PREFIX_DIMS = "8,16,32,64,128,256,512"
 SHORTLIST = "1,5,10,25,50,100"
+
+
+class RunInterrupted(BaseException):
+    def __init__(self, signum: int):
+        self.signum = int(signum)
+        self.returncode = 128 + self.signum
+        super().__init__(f"interrupted by signal {self.signum}")
+
+
+def _interrupt_handler(signum, _frame):
+    raise RunInterrupted(signum)
+
+
+def install_interrupt_handlers() -> None:
+    signal.signal(signal.SIGINT, _interrupt_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _interrupt_handler)
+
+
+def child_popen_kwargs() -> dict:
+    if os.name == "nt":
+        return {}
+    return {"start_new_session": True}
+
+
+def signal_child(process: subprocess.Popen, signum: int) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.send_signal(signum)
+        else:
+            os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+
+
+def kill_child(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def stop_child(process: subprocess.Popen, signum: int, stage: str) -> None:
+    if process.poll() is not None:
+        return
+    print(f"\n[{stage}] interrupt received; forwarding signal {signum} to child process.")
+    signal_child(process, signum)
+    try:
+        process.wait(timeout=CHILD_SHUTDOWN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(f"[{stage}] child did not stop after {CHILD_SHUTDOWN_TIMEOUT:.0f}s; killing it.")
+        kill_child(process)
+        process.wait()
 
 
 def add_arg(parser: argparse.ArgumentParser, name: str, **kwargs) -> None:
@@ -60,6 +122,9 @@ def parse_args() -> argparse.Namespace:
     add_arg(parser, "lr.min_lr", type=float, default=0.00001)
 
     add_arg(parser, "eval.workers", type=int, default=4)
+    add_arg(parser, "nc.enabled", type=int, default=1)
+    add_arg(parser, "nc.interval", type=int, default=10)
+    add_arg(parser, "nc.splits", default="train,test")
     add_arg(parser, "nc.workers", type=int, default=4)
     add_arg(parser, "nc.batch_size", type=int, default=128)
 
@@ -210,14 +275,26 @@ def run_command(
     print(f"\n[{stage}] {command_text(command)}")
     start = time.time()
     append_metric(run, metrics_file, f"{stage}_status", {f"stage/{stage}/started": 1})
-    result = subprocess.run(command, cwd=cwd, env=env)
+    process = subprocess.Popen(command, cwd=cwd, env=env, **child_popen_kwargs())
+    interrupted = None
+    try:
+        returncode = process.wait()
+    except RunInterrupted as exc:
+        interrupted = exc
+        stop_child(process, exc.signum, stage)
+        returncode = process.returncode if process.returncode is not None else exc.returncode
     elapsed = time.time() - start
-    append_metric(run, metrics_file, f"{stage}_status", {
-        f"stage/{stage}/exit_code": int(result.returncode),
+    payload = {
+        f"stage/{stage}/exit_code": int(returncode),
         f"stage/{stage}/time_sec": float(elapsed),
-    })
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(result.returncode, command)
+    }
+    if interrupted is not None:
+        payload[f"stage/{stage}/interrupted"] = 1
+    append_metric(run, metrics_file, f"{stage}_status", payload)
+    if interrupted is not None:
+        raise interrupted
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, command)
 
 
 def train_eval_payload(record: dict) -> dict:
@@ -258,6 +335,41 @@ def train_eval_payload(record: dict) -> dict:
     return payload
 
 
+def train_nc_payload(record: dict) -> dict:
+    split = str(record["split"])
+    dim = int(record["prefix_dim"])
+    payload = {
+        "epoch": int(record["epoch"]),
+        "dim": dim,
+    }
+    skip_keys = {
+        "event",
+        "name",
+        "dataset",
+        "arch",
+        "mode",
+        "epoch",
+        "split",
+        "prefix_dim",
+        "timestamp",
+        "relative_time",
+    }
+    for key, value in record.items():
+        if key in skip_keys:
+            continue
+        value = numeric_value(value)
+        if value is None:
+            continue
+        payload[f"nc/{split}/{key}"] = value
+        payload[f"nc/{split}/{key}/dim_{dim}"] = value
+        payload[f"nc_history/{split}/{key}/dim_{dim}"] = value
+        if key.startswith("gnc"):
+            payload[f"gnc/{split}/{key}"] = value
+            payload[f"gnc/{split}/{key}/dim_{dim}"] = value
+            payload[f"gnc_history/{split}/{key}/dim_{dim}"] = value
+    return payload
+
+
 def drain_train_log(run, train_log: Path, metrics_file: Path, offset: int) -> int:
     if not train_log.exists():
         return offset
@@ -274,7 +386,10 @@ def drain_train_log(run, train_log: Path, metrics_file: Path, offset: int) -> in
                 record = json.loads(line)
             except json.JSONDecodeError:
                 return line_start
-            append_metric(run, metrics_file, "train_eval", train_eval_payload(record))
+            if record.get("event") == "neural_collapse":
+                append_metric(run, metrics_file, "train_neural_collapse", train_nc_payload(record))
+            else:
+                append_metric(run, metrics_file, "train_eval", train_eval_payload(record))
 
 
 def run_training(args: argparse.Namespace, paths: dict[str, Path], run, metrics_file: Path) -> None:
@@ -306,6 +421,11 @@ def run_training(args: argparse.Namespace, paths: dict[str, Path], run, metrics_
         f"--lr.warmup_epochs={args.lr_warmup_epochs}",
         f"--lr.min_lr={args.lr_min_lr}",
         f"--validation.batch_size={args.validation_batch_size}",
+        f"--nc.enabled={args.nc_enabled}",
+        f"--nc.interval={args.nc_interval}",
+        f"--nc.splits={args.nc_splits}",
+        f"--nc.batch_size={args.nc_batch_size}",
+        f"--nc.workers={args.nc_workers}",
         f"--logging.folder={paths['trainlog']}",
         "--logging.run_name=mrl",
     ]
@@ -313,23 +433,40 @@ def run_training(args: argparse.Namespace, paths: dict[str, Path], run, metrics_
     print(f"\n[train] {command_text(command)}")
     start = time.time()
     append_metric(run, metrics_file, "train_status", {"stage/train/started": 1})
-    process = subprocess.Popen(command, cwd=ROOT_DIR / "train", env=child_env(args))
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT_DIR / "train",
+        env=child_env(args),
+        **child_popen_kwargs(),
+    )
     offset = 0
     train_log = paths["train_run"] / "log"
+    interrupted = None
     try:
         while process.poll() is None:
             offset = drain_train_log(run, train_log, metrics_file, offset)
             time.sleep(POLL_SECONDS)
+    except RunInterrupted as exc:
+        interrupted = exc
+        stop_child(process, exc.signum, "train")
     finally:
         offset = drain_train_log(run, train_log, metrics_file, offset)
 
     elapsed = time.time() - start
-    append_metric(run, metrics_file, "train_status", {
-        "stage/train/exit_code": int(process.returncode),
+    returncode = process.returncode if process.returncode is not None else (
+        interrupted.returncode if interrupted is not None else 1
+    )
+    payload = {
+        "stage/train/exit_code": int(returncode),
         "stage/train/time_sec": float(elapsed),
-    })
-    if process.returncode != 0:
-        raise subprocess.CalledProcessError(process.returncode, command)
+    }
+    if interrupted is not None:
+        payload["stage/train/interrupted"] = 1
+    append_metric(run, metrics_file, "train_status", payload)
+    if interrupted is not None:
+        raise interrupted
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, command)
 
     checkpoint = paths["train_run"] / "final_weights.pt"
     if not checkpoint.exists():
@@ -625,6 +762,7 @@ def main() -> int:
     )
 
     exit_code = 0
+    install_interrupt_handlers()
     try:
         append_metric(run, metrics_file, "sweep", {"stage/sweep/started": 1})
         run_training(args, paths, run, metrics_file)
@@ -632,6 +770,14 @@ def main() -> int:
         run_neural_collapse(args, paths, run, metrics_file)
         run_retrieval(args, paths, run, metrics_file)
         append_metric(run, metrics_file, "sweep", {"stage/sweep/completed": 1, "stage/sweep/exit_code": 0})
+    except RunInterrupted as exc:
+        exit_code = exc.returncode
+        append_metric(run, metrics_file, "sweep", {
+            "stage/sweep/interrupted": 1,
+            "stage/sweep/signal": int(exc.signum),
+            "stage/sweep/exit_code": int(exit_code),
+        })
+        print("Full CIFAR-100 sweep run interrupted; stopping cleanly.", file=sys.stderr)
     except Exception as exc:
         exit_code = getattr(exc, "returncode", 1) or 1
         append_metric(run, metrics_file, "sweep", {"stage/sweep/failed": 1, "stage/sweep/exit_code": int(exit_code)})

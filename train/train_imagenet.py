@@ -5,6 +5,7 @@ import json
 import math
 import os
 import random
+import csv
 import sys
 import time
 from argparse import ArgumentParser
@@ -16,6 +17,7 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
+sys.path.append(str(ROOT_DIR / "mnist_neural_collapse"))
 
 import numpy as np
 import torch as ch
@@ -31,6 +33,7 @@ from tqdm import tqdm
 
 from cifar_resnet import build_power2_prefix_dims, make_torchvision_model, maybe_apply_cifar_stem
 from MRL import FixedFeatureLayer, Matryoshka_CE_Loss, MRL_Linear_Layer
+from src.nc_metrics import compute_class_means, nc_metrics, ufm_geometry_metrics
 from wandb_utils import env_default, env_flag, init_wandb_run, wandb_finish, wandb_log
 
 
@@ -91,6 +94,14 @@ Section("validation", "validation settings").params(
 	batch_size=Param(int, "validation batch size", default=512),
 	resolution=Param(int, "validation image size", default=224),
 	lr_tta=Param(int, "left-right flip test-time augmentation? (1/0)", default=1),
+)
+
+Section("nc", "training-time Neural Collapse diagnostics").params(
+	enabled=Param(int, "enable CIFAR-100 NC/GNC logging during training? (1/0)", default=0),
+	interval=Param(int, "completed-epoch interval for NC/GNC logging", default=10),
+	splits=Param(str, "comma-separated CIFAR-100 splits: train,test", default="train,test"),
+	batch_size=Param(int, "NC/GNC dataloader batch size", default=128),
+	workers=Param(int, "NC/GNC dataloader workers", default=4),
 )
 
 Section("training", "training hyperparameters").params(
@@ -286,6 +297,7 @@ class ImageNetTrainer:
 
 		self.train_loader = self.create_train_loader()
 		self.val_loader = self.create_val_loader()
+		self.nc_loaders = self.create_nc_loaders()
 		self.model, self.scaler = self.create_model_and_scaler()
 		self.create_optimizer()
 		self.initialize_logger()
@@ -491,6 +503,70 @@ class ImageNetTrainer:
 			dataset = self._imagenet_dataset(root, "val", transform)
 		return self._make_loader(dataset, batch_size, num_workers, pin_memory, prefetch_factor, False, seed)
 
+	def _parse_nc_splits(self, splits):
+		parsed = [part.strip().lower() for part in str(splits).replace(",", " ").split() if part.strip()]
+		if not parsed:
+			raise ValueError("--nc.splits must include at least one split")
+		allowed = {"train", "test"}
+		unknown = [split for split in parsed if split not in allowed]
+		if unknown:
+			raise ValueError(f"Unsupported --nc.splits values {unknown}; expected train and/or test")
+		return parsed
+
+	@param("nc.enabled")
+	@param("nc.interval")
+	@param("nc.splits")
+	@param("data.root")
+	@param("data.pin_memory")
+	@param("data.prefetch_factor")
+	@param("nc.batch_size")
+	@param("nc.workers")
+	@param("training.seed")
+	@param("validation.resolution")
+	def create_nc_loaders(
+		self,
+		enabled,
+		interval,
+		splits,
+		root,
+		pin_memory,
+		prefetch_factor,
+		batch_size,
+		workers,
+		seed,
+		resolution,
+	):
+		if not enabled:
+			return {}
+		if self.dataset != "cifar100":
+			raise ValueError("--nc.enabled=1 is currently supported only for --data.dataset=cifar100")
+		if interval <= 0:
+			raise ValueError("--nc.interval must be positive when --nc.enabled=1")
+
+		transform_steps = []
+		if resolution != 32:
+			transform_steps.extend([v2.Resize(resolution), v2.CenterCrop(resolution)])
+		transform_steps.extend([
+			v2.ToImage(),
+			v2.ToDtype(ch.float32, scale=True),
+			v2.Normalize(CIFAR100_MEAN, CIFAR100_STD),
+		])
+		transform = v2.Compose(transform_steps)
+
+		loaders = {}
+		for idx, split in enumerate(self._parse_nc_splits(splits)):
+			dataset = self._cifar100_dataset(root, train=(split == "train"), transform=transform)
+			loaders[split] = self._make_loader(
+				dataset,
+				batch_size,
+				workers,
+				pin_memory,
+				prefetch_factor,
+				False,
+				seed + 1000 + idx,
+			)
+		return loaders
+
 	@param("model.arch")
 	@param("model.pretrained")
 	@param("training.use_blurpool")
@@ -499,6 +575,8 @@ class ImageNetTrainer:
 		model = make_torchvision_model(arch, bool(pretrained))
 		model = maybe_apply_cifar_stem(model, self.dataset, arch)
 		feature_dim = model.fc.in_features
+		self.arch = arch
+		self.feature_dim = int(feature_dim)
 		if self.dataset == "cifar100" and arch == "resnet18":
 			print("Using CIFAR ResNet-18 stem: conv1=3x3 stride 1, maxpool=Identity")
 
@@ -589,6 +667,220 @@ class ImageNetTrainer:
 		log_dict.update(self.sampled_prefix_counts_log_dict())
 		return log_dict
 
+	def method_name(self):
+		if self.efficient:
+			return "mrl_e"
+		if self.mrl:
+			return "mrl"
+		if isinstance(self.base_model().fc, FixedFeatureLayer):
+			return "fixed_feature"
+		return "linear"
+
+	def nc_prefix_dims(self):
+		if self.nesting:
+			return list(self.nesting_list)
+		return [int(self.base_model().fc.in_features)]
+
+	def classifier_weight(self, dim):
+		fc = self.base_model().fc
+		if isinstance(fc, MRL_Linear_Layer):
+			if fc.efficient:
+				return fc.nesting_classifier_0.weight[:, :dim]
+			idx = fc.nesting_list.index(dim)
+			return getattr(fc, f"nesting_classifier_{idx}").weight
+		return fc.weight[:, :dim]
+
+	def collect_nc_features_and_logits(self, loader, prefix_dims):
+		self.model.eval()
+		features_by_batch = []
+		labels_by_batch = []
+		logits_by_dim = {dim: [] for dim in prefix_dims}
+		loss_sum = {dim: 0.0 for dim in prefix_dims}
+		top1_sum = {dim: 0 for dim in prefix_dims}
+		top5_sum = {dim: 0 for dim in prefix_dims}
+		seen = 0
+		activation = {}
+
+		def hook(_module, _inputs, output):
+			activation["avgpool"] = output.detach()
+
+		handle = self.base_model().avgpool.register_forward_hook(hook)
+		try:
+			with ch.inference_mode():
+				for images, target in tqdm(loader, desc="nc collect", leave=False):
+					images = images.to(self.device, non_blocking=True)
+					target = target.to(self.device, non_blocking=True)
+					if self.device.type == "cuda":
+						images = images.contiguous(memory_format=ch.channels_last)
+
+					output = self.model(images)
+					features = activation.pop("avgpool").flatten(1)
+					features_by_batch.append(features.cpu())
+					labels_by_batch.append(target.cpu())
+
+					outputs = tuple(output) if not isinstance(output, ch.Tensor) else (output,)
+					if len(outputs) != len(prefix_dims):
+						raise RuntimeError(
+							f"Expected {len(prefix_dims)} NC logits, got {len(outputs)}"
+						)
+					batch_size = target.numel()
+					seen += batch_size
+					for dim, logits in zip(prefix_dims, outputs):
+						logits_by_dim[dim].append(logits.cpu())
+						loss_sum[dim] += float(F.cross_entropy(logits, target, reduction="sum").item())
+						top1_sum[dim] += topk_correct(logits, target, 1)
+						top5_sum[dim] += topk_correct(logits, target, 5)
+		finally:
+			handle.remove()
+
+		features = ch.cat(features_by_batch, dim=0)
+		labels = ch.cat(labels_by_batch, dim=0)
+		logits_cat = {dim: ch.cat(parts, dim=0) for dim, parts in logits_by_dim.items()}
+		loss = {dim: loss_sum[dim] / seen for dim in prefix_dims}
+		top1 = {dim: top1_sum[dim] / seen for dim in prefix_dims}
+		top5 = {dim: top5_sum[dim] / seen for dim in prefix_dims}
+		return features, labels, logits_cat, loss, top1, top5
+
+	def evaluate_nc_split(self, split, loader, completed_epoch, train_loss=None):
+		prefix_dims = self.nc_prefix_dims()
+		features, labels, logits_by_dim, loss_by_dim, top1_by_dim, top5_by_dim = (
+			self.collect_nc_features_and_logits(loader, prefix_dims)
+		)
+		rows = []
+
+		for dim in prefix_dims:
+			z_dim = features[:, :dim]
+			weight_dim = self.classifier_weight(dim).detach().cpu()
+			class_means, _ = compute_class_means(z_dim, labels, self.num_classes)
+			metrics = nc_metrics(
+				features=z_dim,
+				labels=labels,
+				classifier_weight=weight_dim,
+				num_classes=self.num_classes,
+				logits=logits_by_dim[dim],
+			)
+			ufm_metrics = ufm_geometry_metrics(class_means, weight_dim)
+			row = {
+				"event": "neural_collapse",
+				"name": f"{self.method_name()}_{split}_epoch{completed_epoch}_d{dim}",
+				"dataset": self.dataset,
+				"arch": self.arch,
+				"cifar_stem": int(self.dataset == "cifar100" and self.arch == "resnet18"),
+				"mode": self.method_name(),
+				"epoch": int(completed_epoch),
+				"split": split,
+				"prefix_dim": int(dim),
+				"model_feature_dim": int(self.feature_dim),
+				"loss": float(loss_by_dim[dim]),
+				"accuracy": float(top1_by_dim[dim]),
+				"top5": float(top5_by_dim[dim]),
+			}
+			if train_loss is not None:
+				row["train_loss"] = float(train_loss)
+			row.update(metrics)
+			for key, value in ufm_metrics.items():
+				if key == "accuracy":
+					row["prototype_accuracy"] = value
+				elif key == "nc1":
+					row["prototype_nc1"] = value
+				elif key == "nc3_align_mean":
+					row["ufm_nc3_align_mean"] = value
+				elif key == "nc3_align_std":
+					row["ufm_nc3_align_std"] = value
+				elif key == "ncm_acc":
+					row["prototype_ncm_acc"] = value
+				else:
+					row[key] = value
+			row["prototype_ce"] = row["ce"]
+			rows.append(row)
+		return rows
+
+	def append_nc_rows(self, rows):
+		if not rows:
+			return
+		path = self.log_folder / "nc_metrics.csv"
+		exists = path.exists()
+		fieldnames = list(rows[0].keys())
+		with path.open("a", newline="") as handle:
+			writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+			if not exists:
+				writer.writeheader()
+			writer.writerows(rows)
+
+	def nc_wandb_payload(self, row):
+		split = str(row["split"])
+		dim = int(row["prefix_dim"])
+		payload = {
+			"epoch": int(row["epoch"]),
+			"dim": dim,
+		}
+		skip = {
+			"event",
+			"name",
+			"dataset",
+			"arch",
+			"mode",
+			"epoch",
+			"split",
+			"prefix_dim",
+			"timestamp",
+			"relative_time",
+		}
+		for key, value in row.items():
+			if key in skip:
+				continue
+			if isinstance(value, bool):
+				value = int(value)
+			if not isinstance(value, (int, float)):
+				continue
+			payload[f"nc/{split}/{key}"] = value
+			payload[f"nc/{split}/{key}/dim_{dim}"] = value
+			payload[f"nc_history/{split}/{key}/dim_{dim}"] = value
+			if key.startswith("gnc"):
+				payload[f"gnc/{split}/{key}"] = value
+				payload[f"gnc/{split}/{key}/dim_{dim}"] = value
+				payload[f"gnc_history/{split}/{key}/dim_{dim}"] = value
+		return payload
+
+	def log_wandb_nc_rows(self, rows):
+		if self.wandb_run is None:
+			return
+		for row in rows:
+			wandb_log(self.wandb_run, self.nc_wandb_payload(row))
+
+	def log_nc_rows(self, rows):
+		if not rows:
+			return
+		self.append_nc_rows(rows)
+		for row in rows:
+			self.write_log(row, print_record=False)
+		self.log_wandb_nc_rows(rows)
+
+	@param("nc.enabled")
+	@param("nc.interval")
+	def maybe_log_neural_collapse(self, completed_epoch, total_epochs, train_loss, enabled, interval):
+		if not enabled:
+			return
+		if not self.nc_loaders:
+			return
+		should_log = completed_epoch % interval == 0 or completed_epoch == total_epochs
+		if not should_log:
+			return
+
+		print(f"=> NC/GNC: completed_epoch={completed_epoch}, splits={list(self.nc_loaders.keys())}")
+		rows = []
+		for split, loader in self.nc_loaders.items():
+			rows.extend(self.evaluate_nc_split(split, loader, completed_epoch, train_loss=train_loss))
+		self.log_nc_rows(rows)
+		full_dim = max(self.nc_prefix_dims())
+		summary = [
+			f"{row['split']}@d{row['prefix_dim']} acc={100.0 * float(row['accuracy']):.2f}%"
+			for row in rows
+			if int(row["prefix_dim"]) == full_dim
+		]
+		if summary:
+			print("=> NC/GNC summary: " + ", ".join(summary))
+
 	@param("training.epochs")
 	@param("logging.log_level")
 	def train(self, epochs, log_level):
@@ -597,6 +889,7 @@ class ImageNetTrainer:
 			train_loss = self.train_loop(epoch)
 			if log_level > 0:
 				self.eval_and_log({"train_loss": train_loss, "epoch": epoch})
+			self.maybe_log_neural_collapse(epoch + 1, epochs, train_loss)
 			self.save_checkpoint("latest_weights.pt", epoch=epoch)
 		self.eval_and_log({"epoch": epoch})
 		self.save_checkpoint("final_weights.pt", epoch=epoch)
@@ -851,8 +1144,9 @@ class ImageNetTrainer:
 			config=params,
 		)
 
-	def log(self, content):
-		print(f"=> Log: {content}")
+	def write_log(self, content, print_record=True):
+		if print_record:
+			print(f"=> Log: {content}")
 		cur_time = time.time()
 		with open(self.log_folder / "log", "a+") as fd:
 			fd.write(json.dumps({
@@ -861,6 +1155,9 @@ class ImageNetTrainer:
 				**content,
 			}) + "\n")
 			fd.flush()
+
+	def log(self, content):
+		self.write_log(content, print_record=True)
 
 	@classmethod
 	@param("training.eval_only")
