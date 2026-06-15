@@ -32,6 +32,11 @@ NUM_WORKERS=${NUM_WORKERS:-4}
 EVAL_WORKERS=${EVAL_WORKERS:-4}
 NC_WORKERS=${NC_WORKERS:-4}
 NC_BATCH_SIZE=${NC_BATCH_SIZE:-128}
+LR=${LR:-0.1}
+WARMUP_EPOCHS=${WARMUP_EPOCHS:-5}
+MIN_LR=${MIN_LR:-0.00001}
+WEIGHT_DECAY=${WEIGHT_DECAY:-0.0005}
+LABEL_SMOOTHING=${LABEL_SMOOTHING:-0.1}
 
 MRL_LOSS_MODE=${MRL_LOSS_MODE:-all}
 SAMPLED_PREFIX_DISTRIBUTION=${SAMPLED_PREFIX_DISTRIBUTION:-uniform}
@@ -58,6 +63,11 @@ echo "Prefix mask probability: $PREFIX_MASK_PROB"
 echo "Prefix mask scale: $PREFIX_MASK_SCALE"
 echo "Feature dim: $FEATURE_DIM"
 echo "Prefix dims: $PREFIX_DIMS"
+echo "LR: $LR"
+echo "Warmup epochs: $WARMUP_EPOCHS"
+echo "Min LR: $MIN_LR"
+echo "Weight decay: $WEIGHT_DECAY"
+echo "Label smoothing: $LABEL_SMOOTHING"
 echo "W&B enabled: $WANDB_ENABLED"
 echo "W&B project: $WANDB_PROJECT"
 echo "W&B group: $WANDB_GROUP"
@@ -86,6 +96,11 @@ write_manifest() {
         echo "eval_workers=$EVAL_WORKERS"
         echo "nc_workers=$NC_WORKERS"
         echo "nc_batch_size=$NC_BATCH_SIZE"
+        echo "lr=$LR"
+        echo "warmup_epochs=$WARMUP_EPOCHS"
+        echo "min_lr=$MIN_LR"
+        echo "weight_decay=$WEIGHT_DECAY"
+        echo "label_smoothing=$LABEL_SMOOTHING"
         echo "mrl_loss_mode=$MRL_LOSS_MODE"
         echo "sampled_prefix_distribution=$SAMPLED_PREFIX_DISTRIBUTION"
         echo "sampled_prefix_log_interval=$SAMPLED_PREFIX_LOG_INTERVAL"
@@ -126,6 +141,11 @@ train_mrl() {
             --training.epochs="$EPOCHS" \
             --training.seed="$SEED" \
             --training.deterministic="$DETERMINISTIC" \
+            --lr.lr="$LR" \
+            --lr.warmup_epochs="$WARMUP_EPOCHS" \
+            --lr.min_lr="$MIN_LR" \
+            --training.weight_decay="$WEIGHT_DECAY" \
+            --training.label_smoothing="$LABEL_SMOOTHING" \
             --validation.batch_size="$VAL_BATCH_SIZE" \
             --logging.folder="$TRAINLOG_DIR" \
             --logging.run_name="$run_name" \

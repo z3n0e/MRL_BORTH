@@ -35,7 +35,7 @@ wandb sweep sweeps/cifar100_resnet18_sweep.yaml
 wandb agent <entity>/<project>/<sweep_id>
 ```
 
-The sweep objective is `eval/top1/dim_512`. Update `data_root` in `sweeps/cifar100_resnet18_sweep.yaml` if needed.
+The sweep runs the full experiment: train, classification eval, Neural Collapse/GNC, and retrieval. The objective is `eval/top1/dim_512`. Update `data.root` in `sweeps/cifar100_resnet18_sweep.yaml` if needed.
 
 ## Prefix Masking
 

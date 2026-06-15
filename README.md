@@ -91,7 +91,7 @@ wandb sweep sweeps/cifar100_resnet18_sweep.yaml
 wandb agent <entity>/<project>/<sweep_id>
 ```
 
-The sweep optimizes `eval/top1/dim_512` from the CIFAR-100 ResNet-18 MRL training run. Edit `data_root` in [sweeps/cifar100_resnet18_sweep.yaml](/home/sricci/Desktop/MRL_BORTH/sweeps/cifar100_resnet18_sweep.yaml:1) if your CIFAR-100 cache lives somewhere else.
+The sweep runs the full CIFAR-100 experiment wrapper: train, classification eval, Neural Collapse/GNC, and retrieval. It optimizes `eval/top1/dim_512` and logs `train/*`, `eval/*`, `classification/*`, `nc/*`, and `retrieval/*` into the same W&B sweep run. Edit `data.root` in [sweeps/cifar100_resnet18_sweep.yaml](/home/sricci/Desktop/MRL_BORTH/sweeps/cifar100_resnet18_sweep.yaml:1) if your CIFAR-100 cache lives somewhere else.
 
 ### ImageNet
 

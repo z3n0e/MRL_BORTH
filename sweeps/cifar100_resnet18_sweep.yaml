@@ -1,4 +1,4 @@
-program: train/train_imagenet.py
+program: scripts/run_cifar100_sweep.py
 name: cifar100-resnet18-mrl
 method: bayes
 metric:
@@ -7,12 +7,12 @@ metric:
 parameters:
   data.root:
     value: /home/bagnoli/.cache/torchvision
-  logging.folder:
-    value: ./cifar100_sweep_trainlogs
+  output_root:
+    value: ./cifar100_sweep_runs
   model.mrl:
     value: 1
   training.epochs:
-    value: 120
+    value: 100
   training.batch_size:
     value: 128
   validation.batch_size:
@@ -47,6 +47,4 @@ command:
   - ${env}
   - ${interpreter}
   - ${program}
-  - --config-file
-  - train/rn50_configs/rn18_cifar100.yaml
   - ${args}
