@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 ROOT_DIR = Path(__file__).resolve().parent
 sys.path.append(str(ROOT_DIR))
+sys.path.append(str(ROOT_DIR / "inference"))
 sys.path.append(str(ROOT_DIR / "mnist_neural_collapse"))
 
 from cifar_resnet import make_torchvision_model, maybe_apply_cifar_stem, parse_prefix_dims
