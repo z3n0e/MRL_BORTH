@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,24 @@ from experiment_logging import MetricLogger, configure_logging
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_PREFIX_DIMS = "8,16,32,64,128,256,512"
 LOGGER_NAME = "cifar100"
+CHILD_SHUTDOWN_TIMEOUT = 30.0
+
+
+class RunInterrupted(BaseException):
+    def __init__(self, signum: int):
+        self.signum = int(signum)
+        self.returncode = 128 + self.signum
+        super().__init__(f"interrupted by signal {self.signum}")
+
+
+def _interrupt_handler(signum, _frame):
+    raise RunInterrupted(signum)
+
+
+def install_interrupt_handlers() -> None:
+    signal.signal(signal.SIGINT, _interrupt_handler)
+    if hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, _interrupt_handler)
 
 
 def timestamp() -> str:
@@ -36,6 +55,52 @@ def command_text(command: list[str]) -> str:
     return " ".join(str(part) for part in command)
 
 
+def child_popen_kwargs() -> dict:
+    if os.name == "nt":
+        return {}
+    return {"start_new_session": True}
+
+
+def signal_child(process: subprocess.Popen, signum: int) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.send_signal(signum)
+        else:
+            os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+
+
+def kill_child(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def stop_child(process: subprocess.Popen, signum: int, stage: str) -> None:
+    if process.poll() is not None:
+        return
+    import logging
+
+    logger = logging.getLogger(LOGGER_NAME)
+    logger.warning("[%s] interrupt received; forwarding signal %s to child process", stage, signum)
+    signal_child(process, signum)
+    try:
+        process.wait(timeout=CHILD_SHUTDOWN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        logger.warning("[%s] child did not stop after %.0fs; killing it", stage, CHILD_SHUTDOWN_TIMEOUT)
+        kill_child(process)
+        process.wait()
+
+
 def run_command(command: list[str], *, cwd: Path, env: dict[str, str], stage: str, metrics: MetricLogger) -> None:
     import logging
 
@@ -43,14 +108,31 @@ def run_command(command: list[str], *, cwd: Path, env: dict[str, str], stage: st
     logger.info("[%s] %s", stage, command_text(command))
     start = time.time()
     metrics.log(stage, {f"stage/{stage}/started": 1})
-    completed = subprocess.run(command, cwd=cwd, env=env, check=False)
+    process = subprocess.Popen(command, cwd=cwd, env=env, **child_popen_kwargs())
+    interrupted = None
+    try:
+        returncode = process.wait()
+    except RunInterrupted as exc:
+        interrupted = exc
+        stop_child(process, exc.signum, stage)
+        returncode = process.returncode if process.returncode is not None else exc.returncode
+    except KeyboardInterrupt:
+        interrupted = RunInterrupted(signal.SIGINT)
+        stop_child(process, signal.SIGINT, stage)
+        returncode = process.returncode if process.returncode is not None else interrupted.returncode
     elapsed = time.time() - start
-    metrics.log(stage, {
-        f"stage/{stage}/exit_code": int(completed.returncode),
+    payload = {
+        f"stage/{stage}/exit_code": int(returncode),
         f"stage/{stage}/time_sec": float(elapsed),
-    })
-    if completed.returncode != 0:
-        raise subprocess.CalledProcessError(completed.returncode, command)
+    }
+    if interrupted is not None:
+        payload[f"stage/{stage}/interrupted"] = 1
+        payload[f"stage/{stage}/signal"] = int(interrupted.signum)
+    metrics.log(stage, payload)
+    if interrupted is not None:
+        raise interrupted
+    if returncode != 0:
+        raise subprocess.CalledProcessError(returncode, command)
 
 
 def child_env(args: argparse.Namespace, *, wandb_enabled: str | None = None) -> dict[str, str]:
@@ -482,9 +564,13 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     configure_logging(args.log_level)
+    install_interrupt_handlers()
     if getattr(args, "command", "") in {"eval", "nc", "retrieval"} and not args.run_dir and not args.checkpoint:
         parser.error(f"{args.command} requires --run-dir or --checkpoint")
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except RunInterrupted as exc:
+        return int(exc.returncode)
 
 
 if __name__ == "__main__":

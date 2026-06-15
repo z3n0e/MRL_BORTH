@@ -1,6 +1,6 @@
 program: main.py
 name: cifar100-resnet18-mrl
-method: bayes
+method: grid
 metric:
   name: eval/top1/dim_512
   goal: maximize
