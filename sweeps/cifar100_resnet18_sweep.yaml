@@ -1,4 +1,4 @@
-program: scripts/run_cifar100_sweep.py
+program: scripts/cifar100_resnet18_full_sweep.py
 name: cifar100-resnet18-mrl
 method: bayes
 metric:
@@ -12,7 +12,7 @@ parameters:
   model.mrl:
     value: 1
   training.epochs:
-    value: 100
+    value: 120
   training.batch_size:
     value: 128
   validation.batch_size:

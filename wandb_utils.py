@@ -109,9 +109,11 @@ def define_common_metrics(run):
 		run.define_metric("k")
 		run.define_metric("train/*", step_metric="epoch")
 		run.define_metric("eval/*", step_metric="epoch")
+		run.define_metric("mrl/*", step_metric="epoch")
 		run.define_metric("classification/*", step_metric="dim")
 		run.define_metric("retrieval/*", step_metric="dim")
 		run.define_metric("nc/*", step_metric="dim")
+		run.define_metric("gnc/*", step_metric="dim")
 	except Exception as exc:
 		print(f"W&B metric definition failed; continuing without custom axes: {exc}")
 
