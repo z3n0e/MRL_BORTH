@@ -342,6 +342,7 @@ def test_nc_metrics_collapsed_features_have_low_nc1_and_zero_nc4():
     assert "nc3_align_mean" in metrics
     assert "gnc2_weight_margin" in metrics
     assert "gnc2_class_mean_margin" in metrics
+    assert metrics["class_mean_effective_rank"] == pytest.approx(2.0)
 
 
 def test_nc_metrics_noncollapsed_features_increase_nc1():

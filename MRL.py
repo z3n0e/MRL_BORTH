@@ -46,7 +46,7 @@ def validate_prefix_mask(prefix_mask_prob, prefix_mask_scale):
 	return prefix_mask_prob, prefix_mask_scale
 
 
-def mask_previous_prefix_features(features, previous_dim, mask_prob, scale="inverted"):
+def mask_previous_prefix_features(features, previous_dim, mask_prob, scale="none"):
 	"""
 	Mask inherited coordinates for a larger MRL prefix during training.
 
@@ -202,7 +202,7 @@ class MRL_Linear_Layer(nn.Module):
 		num_classes=1000,
 		efficient=False,
 		prefix_mask_prob=0.0,
-		prefix_mask_scale="inverted",
+		prefix_mask_scale="none",
 		**kwargs,
 	):
 		super().__init__()

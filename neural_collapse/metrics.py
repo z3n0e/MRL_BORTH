@@ -348,6 +348,7 @@ def nc_metrics(
         "class_mean_norm_mean": float(mean_norms.mean().item()),
         "class_mean_norm_std": float(mean_norms.std(unbiased=False).item()),
         "effective_rank": effective_rank(features),
+        "class_mean_effective_rank": effective_rank(centered_means),
     }
     out.update(_etf_metrics(centered_means))
 

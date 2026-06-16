@@ -12,7 +12,7 @@ lr:
 model:
   arch: resnet50
   prefix_mask_prob: 0.0
-  prefix_mask_scale: inverted
+  prefix_mask_scale: none
 resolution:
   end_ramp: 0
   max_res: 32

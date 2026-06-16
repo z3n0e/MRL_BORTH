@@ -25,6 +25,8 @@ POLL_SECONDS = 10.0
 CHILD_SHUTDOWN_TIMEOUT = 30.0
 PREFIX_DIMS = "8,16,32,64,128,256,512"
 SHORTLIST = "1,5,10,25,50,100"
+DEFAULT_PREFIX_MASK_SCALE = "none"
+ALLOW_INVERTED_PREFIX_MASK_ENV = "MRL_ALLOW_PREFIX_MASK_SCALE_INVERTED"
 
 
 class RunInterrupted(BaseException):
@@ -42,6 +44,27 @@ def install_interrupt_handlers() -> None:
     signal.signal(signal.SIGINT, _interrupt_handler)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _interrupt_handler)
+
+
+def env_flag(name: str, default: int = 0) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return int(default)
+    return int(str(value).strip().lower() in {"1", "true", "yes", "on"})
+
+
+def normalized_exit_code(returncode: int) -> int:
+    return 128 + abs(int(returncode)) if int(returncode) < 0 else int(returncode)
+
+
+def enforce_prefix_mask_scale(args: argparse.Namespace) -> None:
+    if str(args.model_prefix_mask_scale).lower() == "inverted" and env_flag(ALLOW_INVERTED_PREFIX_MASK_ENV, 0) != 1:
+        print(
+            "model.prefix_mask_scale=inverted was supplied; forcing model.prefix_mask_scale=none. "
+            f"Set {ALLOW_INVERTED_PREFIX_MASK_ENV}=1 to run an explicit inverted-scaling ablation.",
+            file=sys.stderr,
+        )
+        args.model_prefix_mask_scale = DEFAULT_PREFIX_MASK_SCALE
 
 
 def child_popen_kwargs() -> dict:
@@ -110,7 +133,7 @@ def parse_args() -> argparse.Namespace:
     add_arg(parser, "model.prefix_dims", default=PREFIX_DIMS)
     add_arg(parser, "model.nesting_start", type=int, default=3)
     add_arg(parser, "model.prefix_mask_prob", type=float, default=0.0)
-    add_arg(parser, "model.prefix_mask_scale", default="inverted")
+    add_arg(parser, "model.prefix_mask_scale", default=DEFAULT_PREFIX_MASK_SCALE, choices=("none", "inverted"))
 
     add_arg(parser, "training.epochs", type=int, default=120)
     add_arg(parser, "training.batch_size", type=int, default=128)
@@ -289,13 +312,20 @@ def run_command(
         interrupted = exc
         stop_child(process, exc.signum, stage)
         returncode = process.returncode if process.returncode is not None else exc.returncode
+    except KeyboardInterrupt:
+        interrupted = RunInterrupted(signal.SIGINT)
+        stop_child(process, signal.SIGINT, stage)
+        returncode = process.returncode if process.returncode is not None else interrupted.returncode
     elapsed = time.time() - start
     payload = {
-        f"stage/{stage}/exit_code": int(returncode),
+        f"stage/{stage}/exit_code": normalized_exit_code(returncode),
         f"stage/{stage}/time_sec": float(elapsed),
     }
+    if int(returncode) < 0:
+        payload[f"stage/{stage}/signal"] = abs(int(returncode))
     if interrupted is not None:
         payload[f"stage/{stage}/interrupted"] = 1
+        payload[f"stage/{stage}/signal"] = int(interrupted.signum)
     append_metric(run, metrics_file, f"{stage}_status", payload)
     if interrupted is not None:
         raise interrupted
@@ -457,6 +487,9 @@ def run_training(args: argparse.Namespace, paths: dict[str, Path], run, metrics_
     except RunInterrupted as exc:
         interrupted = exc
         stop_child(process, exc.signum, "train")
+    except KeyboardInterrupt:
+        interrupted = RunInterrupted(signal.SIGINT)
+        stop_child(process, signal.SIGINT, "train")
     finally:
         offset = drain_train_log(run, train_log, metrics_file, offset)
 
@@ -465,11 +498,14 @@ def run_training(args: argparse.Namespace, paths: dict[str, Path], run, metrics_
         interrupted.returncode if interrupted is not None else 1
     )
     payload = {
-        "stage/train/exit_code": int(returncode),
+        "stage/train/exit_code": normalized_exit_code(returncode),
         "stage/train/time_sec": float(elapsed),
     }
+    if int(returncode) < 0:
+        payload["stage/train/signal"] = abs(int(returncode))
     if interrupted is not None:
         payload["stage/train/interrupted"] = 1
+        payload["stage/train/signal"] = int(interrupted.signum)
     append_metric(run, metrics_file, "train_status", payload)
     if interrupted is not None:
         raise interrupted
@@ -759,6 +795,7 @@ def write_manifest(args: argparse.Namespace, paths: dict[str, Path], metrics_fil
 
 def main() -> int:
     args = parse_args()
+    enforce_prefix_mask_scale(args)
     force_deterministic(args)
     resolve_data_root(args)
     paths = make_paths(args)
@@ -803,7 +840,7 @@ def main() -> int:
         })
         print("Full CIFAR-100 sweep run interrupted; stopping cleanly.", file=sys.stderr)
     except Exception as exc:
-        exit_code = getattr(exc, "returncode", 1) or 1
+        exit_code = normalized_exit_code(getattr(exc, "returncode", 1) or 1)
         append_metric(run, metrics_file, "sweep", {"stage/sweep/failed": 1, "stage/sweep/exit_code": int(exit_code)})
         print(f"Full CIFAR-100 sweep run failed: {exc}", file=sys.stderr)
     finally:

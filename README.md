@@ -50,10 +50,10 @@ python train_imagenet.py \
   --config-file rn50_configs/rn18_cifar100.yaml \
   --model.mrl=1 \
   --model.prefix_mask_prob=0.1 \
-  --model.prefix_mask_scale=inverted
+  --model.prefix_mask_scale=none
 ```
 
-The default is `--model.prefix_mask_prob=0.0` to preserve baseline accuracy unless you opt in.
+The defaults are `--model.prefix_mask_prob=0.0` and `--model.prefix_mask_scale=none`.
 
 ## Training
 
@@ -107,6 +107,8 @@ The full runner groups separate W&B runs for training, classification eval, Neur
 wandb sweep sweeps/cifar100_resnet18_sweep.yaml
 wandb agent <entity>/<project>/<sweep_id>
 ```
+
+W&B sweep configs are captured when the sweep is created. If you change this YAML, create a new sweep ID before starting another agent.
 
 The sweep runs the full CIFAR-100 experiment wrapper: train, classification eval, training-time Neural Collapse/GNC every 10 completed epochs, and final retrieval after training. It optimizes `eval/top1/dim_512` and logs `train/*`, `eval/*`, `classification/*`, `nc/*`, `gnc/*`, `nc_history/*`, `gnc_history/*`, and `retrieval/*` into the same W&B sweep run. Edit `data-root` in [sweeps/cifar100_resnet18_sweep.yaml](/home/sricci/Desktop/MRL_BORTH/sweeps/cifar100_resnet18_sweep.yaml:1) if your CIFAR-100 cache lives somewhere else.
 The sweep now calls `python main.py full`, so sweep parameters use the same hyphenated CLI names as the manual workflow.
@@ -214,6 +216,7 @@ CIFAR-100 runs measure a compact NC/GNC metric set from the local `neural_collap
 - `gnc2_class_mean_margin`
 - `gnc3_alignment_error`
 - `effective_rank`
+- `class_mean_effective_rank`
 
 ```bash
 python cifar100_neural_collapse.py \

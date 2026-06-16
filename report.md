@@ -26,10 +26,10 @@ python train_imagenet.py \
   --config-file rn50_configs/rn50_cifar100.yaml \
   --model.mrl=1 \
   --model.prefix_mask_prob=0.1 \
-  --model.prefix_mask_scale=inverted
+  --model.prefix_mask_scale=none
 ```
 
-The default mask probability is `0.0`.
+The default mask probability is `0.0`, and the default mask scale is `none`.
 
 ## Training
 

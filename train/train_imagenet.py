@@ -44,7 +44,7 @@ Section("model", "model details").params(
 	nesting_start=Param(int, "2**i will be the smallest nesting dimension", default=3),
 	fixed_feature=Param(int, "fixed-feature eval/training prefix size", default=2048),
 	prefix_mask_prob=Param(float, "training-only inherited-prefix mask probability", default=0.0),
-	prefix_mask_scale=Param(And(str, OneOf(["inverted", "none"])), "prefix mask scaling", default="inverted"),
+	prefix_mask_scale=Param(And(str, OneOf(["inverted", "none"])), "prefix mask scaling", default="none"),
 )
 
 Section("resolution", "resolution scheduling").params(

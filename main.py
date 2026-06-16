@@ -17,6 +17,8 @@ ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_PREFIX_DIMS = "8,16,32,64,128,256,512"
 LOGGER_NAME = "cifar100"
 CHILD_SHUTDOWN_TIMEOUT = 30.0
+DEFAULT_PREFIX_MASK_SCALE = "none"
+ALLOW_INVERTED_PREFIX_MASK_ENV = "MRL_ALLOW_PREFIX_MASK_SCALE_INVERTED"
 
 
 class RunInterrupted(BaseException):
@@ -49,6 +51,22 @@ def env_flag(name: str, default: int = 0) -> int:
     if value is None:
         return int(default)
     return int(str(value).strip().lower() in {"1", "true", "yes", "on"})
+
+
+def normalized_exit_code(returncode: int) -> int:
+    return 128 + abs(int(returncode)) if int(returncode) < 0 else int(returncode)
+
+
+def enforce_prefix_mask_scale(args: argparse.Namespace) -> None:
+    if not hasattr(args, "prefix_mask_scale"):
+        return
+    if str(args.prefix_mask_scale).lower() == "inverted" and env_flag(ALLOW_INVERTED_PREFIX_MASK_ENV, 0) != 1:
+        print(
+            "prefix-mask-scale=inverted was supplied; forcing prefix-mask-scale=none. "
+            f"Set {ALLOW_INVERTED_PREFIX_MASK_ENV}=1 to run an explicit inverted-scaling ablation.",
+            file=sys.stderr,
+        )
+        args.prefix_mask_scale = DEFAULT_PREFIX_MASK_SCALE
 
 
 def command_text(command: list[str]) -> str:
@@ -122,9 +140,11 @@ def run_command(command: list[str], *, cwd: Path, env: dict[str, str], stage: st
         returncode = process.returncode if process.returncode is not None else interrupted.returncode
     elapsed = time.time() - start
     payload = {
-        f"stage/{stage}/exit_code": int(returncode),
+        f"stage/{stage}/exit_code": normalized_exit_code(returncode),
         f"stage/{stage}/time_sec": float(elapsed),
     }
+    if int(returncode) < 0:
+        payload[f"stage/{stage}/signal"] = abs(int(returncode))
     if interrupted is not None:
         payload[f"stage/{stage}/interrupted"] = 1
         payload[f"stage/{stage}/signal"] = int(interrupted.signum)
@@ -191,7 +211,7 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sampled-prefix-distribution", default="uniform")
     parser.add_argument("--sampled-prefix-log-interval", type=int, default=100)
     parser.add_argument("--prefix-mask-prob", type=float, default=0.0)
-    parser.add_argument("--prefix-mask-scale", default="inverted")
+    parser.add_argument("--prefix-mask-scale", default=DEFAULT_PREFIX_MASK_SCALE, choices=("none", "inverted"))
 
 
 def add_nc_args(parser: argparse.ArgumentParser, *, default_enabled: int = 1) -> None:
@@ -565,12 +585,15 @@ def main() -> int:
     args = parser.parse_args()
     configure_logging(args.log_level)
     install_interrupt_handlers()
+    enforce_prefix_mask_scale(args)
     if getattr(args, "command", "") in {"eval", "nc", "retrieval"} and not args.run_dir and not args.checkpoint:
         parser.error(f"{args.command} requires --run-dir or --checkpoint")
     try:
         return int(args.func(args))
     except RunInterrupted as exc:
         return int(exc.returncode)
+    except subprocess.CalledProcessError as exc:
+        return normalized_exit_code(int(exc.returncode))
 
 
 if __name__ == "__main__":

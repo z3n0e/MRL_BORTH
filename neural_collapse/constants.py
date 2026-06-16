@@ -12,4 +12,5 @@ CORE_NC_METRIC_KEYS = {
     "gnc2_class_mean_margin",
     "gnc3_alignment_error",
     "effective_rank",
+    "class_mean_effective_rank",
 }

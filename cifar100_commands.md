@@ -52,6 +52,8 @@ wandb sweep sweeps/cifar100_resnet18_sweep.yaml
 wandb agent <entity>/<project>/<sweep_id>
 ```
 
+W&B stores the sweep config at creation time. After changing `sweeps/cifar100_resnet18_sweep.yaml`, create a new sweep ID instead of reusing an older one.
+
 The sweep runs `python main.py full`: train, classification eval, Neural Collapse/GNC, and retrieval. The objective is `eval/top1/dim_512`. Update `data-root` in `sweeps/cifar100_resnet18_sweep.yaml` if needed.
 
 ## Prefix Masking
@@ -59,10 +61,10 @@ The sweep runs `python main.py full`: train, classification eval, Neural Collaps
 The CIFAR/ImageNet trainer supports MNIST-style inherited-prefix masking:
 
 ```bash
-PREFIX_MASK_PROB=0.1 PREFIX_MASK_SCALE=inverted ./run_cifar100_experiments.sh
+PREFIX_MASK_PROB=0.1 PREFIX_MASK_SCALE=none ./run_cifar100_experiments.sh
 ```
 
-The default is `PREFIX_MASK_PROB=0.0`.
+The defaults are `PREFIX_MASK_PROB=0.0` and `PREFIX_MASK_SCALE=none`.
 
 ## Train MRL Directly
 
@@ -155,7 +157,7 @@ The experiment runner writes retrieval summaries to `cifar100_runs/<run>/cifar10
 
 ## Neural Collapse Metrics
 
-The compact NC/GNC output focuses on `nc1_within_to_between`, `nc2_etf_error`, `nc3_alignment`, `nc4_ncc_mismatch`, `gnc2_weight_margin`, `gnc2_class_mean_margin`, `gnc3_alignment_error`, and `effective_rank`. Compatibility aliases such as `nc1`, `nc3_align_mean`, and `nc4_ncc_mismatch` are retained in CSV/JSON rows.
+The compact NC/GNC output focuses on `nc1_within_to_between`, `nc2_etf_error`, `nc3_alignment`, `nc4_ncc_mismatch`, `gnc2_weight_margin`, `gnc2_class_mean_margin`, `gnc3_alignment_error`, `effective_rank`, and `class_mean_effective_rank`. Compatibility aliases such as `nc1`, `nc3_align_mean`, and `nc4_ncc_mismatch` are retained in CSV/JSON rows.
 
 ```bash
 python cifar100_neural_collapse.py \

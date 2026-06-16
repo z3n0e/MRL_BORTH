@@ -714,9 +714,9 @@ def main() -> None:
     parser.add_argument(
         "--prefix-mask-scale",
         type=str,
-        default="inverted",
+        default="none",
         choices=("inverted", "none"),
-        help="whether to use inverted-dropout scaling for prefix masking",
+        help="prefix-mask scaling mode",
     )
     parser.add_argument("--eval-every", type=int, default=2)
     parser.add_argument("--data-dir", type=str, default="data")

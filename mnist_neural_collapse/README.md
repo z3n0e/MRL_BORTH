@@ -125,7 +125,7 @@ python train_mnist_nc.py \
   --out-dir outputs/mnist_mrl_prefix_mask
 ```
 
-By default the mask uses inverted-dropout scaling. Use `--prefix-mask-scale none` to zero masked coordinates without rescaling the survivors.
+By default the mask zeros coordinates without rescaling the survivors. Use `--prefix-mask-scale inverted` for inverted-dropout scaling.
 
 To use supervised contrastive loss instead of VICReg:
 
