@@ -36,7 +36,7 @@ parameters:
   prefix-mask-scale:
     value: none
   prefix-mask-scope:
-    value: sample
+    value: batch
   mrl-loss-mode:
     values: [all]
   sampled-prefix-distribution:
