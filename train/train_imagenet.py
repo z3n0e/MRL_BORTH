@@ -447,6 +447,27 @@ class ImageNetTrainer:
 			)
 		return datasets.ImageFolder(split_root, transform=transform)
 
+	def _cifar100_train_transform(self):
+		return v2.Compose([
+			v2.RandomCrop(32, padding=4),
+			v2.RandomHorizontalFlip(),
+			v2.RandAugment(num_ops=2, magnitude=9),
+			v2.ToImage(),
+			v2.ToDtype(ch.float32, scale=True),
+			v2.Normalize(CIFAR100_MEAN, CIFAR100_STD),
+		])
+
+	def _cifar100_eval_transform(self, resolution):
+		transforms = []
+		if resolution != 32:
+			transforms.extend([v2.Resize(resolution), v2.CenterCrop(resolution)])
+		transforms.extend([
+			v2.ToImage(),
+			v2.ToDtype(ch.float32, scale=True),
+			v2.Normalize(CIFAR100_MEAN, CIFAR100_STD),
+		])
+		return v2.Compose(transforms)
+
 	@param("data.root")
 	@param("data.num_workers")
 	@param("data.pin_memory")
@@ -457,13 +478,7 @@ class ImageNetTrainer:
 		res = self.get_resolution(epoch=0)
 		self.train_resolution = res
 		if self.dataset == "cifar100":
-			transform = v2.Compose([
-				v2.RandomCrop(32, padding=4),
-				v2.RandomHorizontalFlip(),
-				v2.ToImage(),
-				v2.ToDtype(ch.float32, scale=True),
-				v2.Normalize(CIFAR100_MEAN, CIFAR100_STD),
-			])
+			transform = self._cifar100_train_transform()
 			dataset = self._cifar100_dataset(root, train=True, transform=transform)
 		else:
 			transform = v2.Compose([
@@ -485,15 +500,8 @@ class ImageNetTrainer:
 	@param("training.seed")
 	def create_val_loader(self, root, num_workers, pin_memory, prefetch_factor, batch_size, resolution, seed):
 		if self.dataset == "cifar100":
-			transforms = []
-			if resolution != 32:
-				transforms.extend([v2.Resize(resolution), v2.CenterCrop(resolution)])
-			transforms.extend([
-				v2.ToImage(),
-				v2.ToDtype(ch.float32, scale=True),
-				v2.Normalize(CIFAR100_MEAN, CIFAR100_STD),
-			])
-			dataset = self._cifar100_dataset(root, train=False, transform=v2.Compose(transforms))
+			transform = self._cifar100_eval_transform(resolution)
+			dataset = self._cifar100_dataset(root, train=False, transform=transform)
 		else:
 			resize_size = int(resolution / 0.875)
 			transform = v2.Compose([
@@ -546,15 +554,7 @@ class ImageNetTrainer:
 		if interval <= 0:
 			raise ValueError("--nc.interval must be positive when --nc.enabled=1")
 
-		transform_steps = []
-		if resolution != 32:
-			transform_steps.extend([v2.Resize(resolution), v2.CenterCrop(resolution)])
-		transform_steps.extend([
-			v2.ToImage(),
-			v2.ToDtype(ch.float32, scale=True),
-			v2.Normalize(CIFAR100_MEAN, CIFAR100_STD),
-		])
-		transform = v2.Compose(transform_steps)
+		transform = self._cifar100_eval_transform(resolution)
 
 		loaders = {}
 		for idx, split in enumerate(self._parse_nc_splits(splits)):
