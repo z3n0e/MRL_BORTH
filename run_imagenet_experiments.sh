@@ -49,6 +49,7 @@ SAMPLED_PREFIX_DISTRIBUTION=${SAMPLED_PREFIX_DISTRIBUTION:-uniform}
 SAMPLED_PREFIX_LOG_INTERVAL=${SAMPLED_PREFIX_LOG_INTERVAL:-100}
 PREFIX_MASK_PROB=${PREFIX_MASK_PROB:-0.0}
 PREFIX_MASK_SCALE=${PREFIX_MASK_SCALE:-none}
+PREFIX_MASK_SCOPE=${PREFIX_MASK_SCOPE:-batch}
 RUN_RETRIEVAL_METRICS=${RUN_RETRIEVAL_METRICS:-1}
 
 TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
@@ -67,6 +68,7 @@ echo "W&B group: $WANDB_GROUP"
 echo "MRL loss mode: $MRL_LOSS_MODE"
 echo "Prefix mask probability: $PREFIX_MASK_PROB"
 echo "Prefix mask scale: $PREFIX_MASK_SCALE"
+echo "Prefix mask scope: $PREFIX_MASK_SCOPE"
 echo "Run retrieval metrics: $RUN_RETRIEVAL_METRICS"
 
 MRL_TRAINING_ARGS=(
@@ -75,6 +77,7 @@ MRL_TRAINING_ARGS=(
     --training.sampled_prefix_log_interval="$SAMPLED_PREFIX_LOG_INTERVAL"
     --model.prefix_mask_prob="$PREFIX_MASK_PROB"
     --model.prefix_mask_scale="$PREFIX_MASK_SCALE"
+    --model.prefix_mask_scope="$PREFIX_MASK_SCOPE"
 )
 
 write_manifest() {
@@ -101,6 +104,7 @@ write_manifest() {
         echo "sampled_prefix_log_interval=$SAMPLED_PREFIX_LOG_INTERVAL"
         echo "prefix_mask_prob=$PREFIX_MASK_PROB"
         echo "prefix_mask_scale=$PREFIX_MASK_SCALE"
+        echo "prefix_mask_scope=$PREFIX_MASK_SCOPE"
         echo "run_retrieval_metrics=$RUN_RETRIEVAL_METRICS"
     } > "$EXPERIMENT_DIR/manifest.txt"
 }

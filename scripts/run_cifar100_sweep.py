@@ -19,6 +19,7 @@ LEGACY_ARG_MAP = {
     "--model.prefix_dims": "--prefix-dims",
     "--model.prefix_mask_prob": "--prefix-mask-prob",
     "--model.prefix_mask_scale": "--prefix-mask-scale",
+    "--model.prefix_mask_scope": "--prefix-mask-scope",
     "--training.epochs": "--epochs",
     "--training.batch_size": "--train-batch-size",
     "--training.seed": "--seed",

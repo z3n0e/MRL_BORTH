@@ -19,6 +19,7 @@ LOGGER_NAME = "cifar100"
 CHILD_SHUTDOWN_TIMEOUT = 30.0
 DEFAULT_WANDB_PROJECT = "MRL_BORTH"
 DEFAULT_PREFIX_MASK_SCALE = "none"
+DEFAULT_PREFIX_MASK_SCOPE = "batch"
 ALLOW_INVERTED_PREFIX_MASK_ENV = "MRL_ALLOW_PREFIX_MASK_SCALE_INVERTED"
 
 
@@ -231,6 +232,7 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sampled-prefix-log-interval", type=int, default=100)
     parser.add_argument("--prefix-mask-prob", type=float, default=0.0)
     parser.add_argument("--prefix-mask-scale", default=DEFAULT_PREFIX_MASK_SCALE, choices=("none", "inverted"))
+    parser.add_argument("--prefix-mask-scope", default=DEFAULT_PREFIX_MASK_SCOPE, choices=("sample", "batch"))
 
 
 def add_nc_args(parser: argparse.ArgumentParser, *, default_enabled: int = 1) -> None:
@@ -287,6 +289,7 @@ def train_command(args: argparse.Namespace, run_dir: Path) -> list[str]:
         "--model.nesting_start=3",
         f"--model.prefix_mask_prob={args.prefix_mask_prob}",
         f"--model.prefix_mask_scale={args.prefix_mask_scale}",
+        f"--model.prefix_mask_scope={args.prefix_mask_scope}",
         f"--data.root={args.data_root}",
         f"--data.num_workers={args.workers}",
         f"--training.batch_size={args.train_batch_size}",
@@ -528,6 +531,7 @@ def run_full(args: argparse.Namespace) -> int:
         f"--model.prefix_dims={args.prefix_dims}",
         f"--model.prefix_mask_prob={args.prefix_mask_prob}",
         f"--model.prefix_mask_scale={args.prefix_mask_scale}",
+        f"--model.prefix_mask_scope={args.prefix_mask_scope}",
         f"--training.epochs={args.epochs}",
         f"--training.batch_size={args.train_batch_size}",
         f"--training.seed={args.seed}",

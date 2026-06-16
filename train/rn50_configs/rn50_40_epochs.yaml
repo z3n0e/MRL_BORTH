@@ -13,6 +13,7 @@ model:
   arch: resnet50
   prefix_mask_prob: 0.0
   prefix_mask_scale: none
+  prefix_mask_scope: batch
 resolution:
   end_ramp: 34
   max_res: 192

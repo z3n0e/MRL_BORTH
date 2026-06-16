@@ -17,6 +17,7 @@ model:
   nesting_start: 3
   prefix_mask_prob: 0.0
   prefix_mask_scale: none
+  prefix_mask_scope: batch
 resolution:
   end_ramp: 0
   max_res: 32

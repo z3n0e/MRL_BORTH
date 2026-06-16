@@ -27,6 +27,7 @@ PREFIX_DIMS = "8,16,32,64,128,256,512"
 SHORTLIST = "1,5,10,25,50,100"
 DEFAULT_WANDB_PROJECT = "MRL_BORTH"
 DEFAULT_PREFIX_MASK_SCALE = "none"
+DEFAULT_PREFIX_MASK_SCOPE = "batch"
 ALLOW_INVERTED_PREFIX_MASK_ENV = "MRL_ALLOW_PREFIX_MASK_SCALE_INVERTED"
 
 
@@ -150,6 +151,7 @@ def parse_args() -> argparse.Namespace:
     add_arg(parser, "model.nesting_start", type=int, default=3)
     add_arg(parser, "model.prefix_mask_prob", type=float, default=0.0)
     add_arg(parser, "model.prefix_mask_scale", default=DEFAULT_PREFIX_MASK_SCALE, choices=("none", "inverted"))
+    add_arg(parser, "model.prefix_mask_scope", default=DEFAULT_PREFIX_MASK_SCOPE, choices=("sample", "batch"))
 
     add_arg(parser, "training.epochs", type=int, default=120)
     add_arg(parser, "training.batch_size", type=int, default=128)
@@ -460,6 +462,7 @@ def run_training(args: argparse.Namespace, paths: dict[str, Path], run, metrics_
         f"--model.nesting_start={args.model_nesting_start}",
         f"--model.prefix_mask_prob={args.model_prefix_mask_prob}",
         f"--model.prefix_mask_scale={args.model_prefix_mask_scale}",
+        f"--model.prefix_mask_scope={args.model_prefix_mask_scope}",
         f"--data.root={args.data_root}",
         f"--data.num_workers={args.data_num_workers}",
         f"--training.batch_size={args.training_batch_size}",
@@ -766,6 +769,7 @@ def write_retrieval_summary(metrics_json: Path, summary_csv: Path, args: argpars
             "training_sampled_prefix_log_interval": args.training_sampled_prefix_log_interval,
             "training_prefix_mask_prob": args.model_prefix_mask_prob,
             "training_prefix_mask_scale": args.model_prefix_mask_scale,
+            "training_prefix_mask_scope": args.model_prefix_mask_scope,
             "feature_config": data.get("feature_config", ""),
             "eval_config": data.get("eval_config", ""),
             "index_type": data.get("index_type", ""),
@@ -787,6 +791,7 @@ def write_retrieval_summary(metrics_json: Path, summary_csv: Path, args: argpars
         "training_sampled_prefix_log_interval",
         "training_prefix_mask_prob",
         "training_prefix_mask_scale",
+        "training_prefix_mask_scope",
         "feature_config", "eval_config", "index_type",
         "dim", "k", "top1", "cmc@1", "cmc@5", "mAP", "precision", "recall", "topk",
         "neighbors_path",

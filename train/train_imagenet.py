@@ -45,6 +45,7 @@ Section("model", "model details").params(
 	fixed_feature=Param(int, "fixed-feature eval/training prefix size", default=2048),
 	prefix_mask_prob=Param(float, "training-only inherited-prefix mask probability", default=0.0),
 	prefix_mask_scale=Param(And(str, OneOf(["inverted", "none"])), "prefix mask scaling", default="none"),
+	prefix_mask_scope=Param(And(str, OneOf(["sample", "batch"])), "prefix mask sharing scope", default="batch"),
 )
 
 Section("resolution", "resolution scheduling").params(
@@ -254,6 +255,7 @@ class ImageNetTrainer:
 	@param("model.fixed_feature")
 	@param("model.prefix_mask_prob")
 	@param("model.prefix_mask_scale")
+	@param("model.prefix_mask_scope")
 	@param("data.dataset")
 	@param("training.seed")
 	@param("training.deterministic")
@@ -265,6 +267,7 @@ class ImageNetTrainer:
 		fixed_feature,
 		prefix_mask_prob,
 		prefix_mask_scale,
+		prefix_mask_scope,
 		dataset,
 		seed,
 		deterministic,
@@ -285,6 +288,7 @@ class ImageNetTrainer:
 		self.fixed_feature = int(fixed_feature)
 		self.prefix_mask_prob = float(prefix_mask_prob)
 		self.prefix_mask_scale = prefix_mask_scale
+		self.prefix_mask_scope = prefix_mask_scope
 		self.dataset = dataset
 		self.dataset_config = DATASET_CONFIGS[dataset]
 		self.num_classes = self.dataset_config["num_classes"]
@@ -587,7 +591,8 @@ class ImageNetTrainer:
 			if self.prefix_mask_prob > 0.0:
 				print(
 					"MRL prefix masking enabled: "
-					f"p={self.prefix_mask_prob}, scale={self.prefix_mask_scale}"
+					f"p={self.prefix_mask_prob}, scale={self.prefix_mask_scale}, "
+					f"scope={self.prefix_mask_scope}"
 				)
 			model.fc = MRL_Linear_Layer(
 				self.nesting_list,
@@ -595,6 +600,7 @@ class ImageNetTrainer:
 				efficient=self.efficient,
 				prefix_mask_prob=self.prefix_mask_prob,
 				prefix_mask_scale=self.prefix_mask_scale,
+				prefix_mask_scope=self.prefix_mask_scope,
 			)
 		elif self.fixed_feature != 2048:
 			if self.fixed_feature > feature_dim:
@@ -1013,6 +1019,7 @@ class ImageNetTrainer:
 				**startup_log,
 				"prefix_mask_prob": self.prefix_mask_prob,
 				"prefix_mask_scale": self.prefix_mask_scale,
+				"prefix_mask_scope": self.prefix_mask_scope,
 			}
 		if startup_log:
 			self.log(startup_log)

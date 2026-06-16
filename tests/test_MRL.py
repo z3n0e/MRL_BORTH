@@ -145,11 +145,66 @@ def test_prefix_mask_masks_only_previous_prefix(monkeypatch):
         previous_dim=2,
         mask_prob=0.5,
         scale="inverted",
+        scope="sample",
     )
 
     assert torch.equal(masked[:, :2], torch.tensor([[0.0, 4.0]]))
     assert torch.equal(masked[:, 2:], features[:, 2:])
     assert torch.equal(features, torch.tensor([[1.0, 2.0, 3.0, 4.0]]))
+
+
+def test_prefix_mask_batch_scope_shares_mask_across_batch(monkeypatch):
+    def fake_rand(*shape, device=None):
+        assert shape == (1, 2)
+        return torch.tensor([[0.25, 0.75]], device=device)
+
+    monkeypatch.setattr(torch, "rand", fake_rand)
+    features = torch.tensor([
+        [1.0, 2.0, 3.0, 4.0],
+        [10.0, 20.0, 30.0, 40.0],
+    ])
+
+    masked = mask_previous_prefix_features(
+        features,
+        previous_dim=2,
+        mask_prob=0.5,
+        scale="none",
+        scope="batch",
+    )
+
+    assert torch.equal(masked[:, :2], torch.tensor([[0.0, 2.0], [0.0, 20.0]]))
+    assert torch.equal(masked[:, 2:], features[:, 2:])
+
+
+def test_mrl_layer_batch_scope_samples_one_mask_per_prefix_transition(monkeypatch):
+    def fake_rand(*shape, device=None):
+        if shape == (1, 2):
+            return torch.tensor([[0.0, 1.0]], device=device)
+        if shape == (1, 4):
+            return torch.tensor([[1.0, 0.0, 1.0, 0.0]], device=device)
+        raise AssertionError(f"unexpected random shape: {shape}")
+
+    monkeypatch.setattr(torch, "rand", fake_rand)
+    layer = MRL_Linear_Layer(
+        [2, 4, 6],
+        num_classes=1,
+        efficient=False,
+        prefix_mask_prob=0.5,
+        prefix_mask_scope="batch",
+        bias=False,
+    )
+    for idx in range(3):
+        getattr(layer, f"nesting_classifier_{idx}").weight.data.fill_(1.0)
+    x = torch.tensor([
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+    ])
+
+    logits = layer(x)
+
+    assert torch.equal(logits[0].squeeze(1), torch.tensor([3.0, 30.0]))
+    assert torch.equal(logits[1].squeeze(1), torch.tensor([9.0, 90.0]))
+    assert torch.equal(logits[2].squeeze(1), torch.tensor([15.0, 150.0]))
 
 
 def test_mrl_linear_layer_prefix_mask_training_only(monkeypatch):

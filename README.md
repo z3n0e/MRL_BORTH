@@ -50,10 +50,11 @@ python train_imagenet.py \
   --config-file rn50_configs/rn18_cifar100.yaml \
   --model.mrl=1 \
   --model.prefix_mask_prob=0.1 \
-  --model.prefix_mask_scale=none
+  --model.prefix_mask_scale=none \
+  --model.prefix_mask_scope=batch
 ```
 
-The defaults are `--model.prefix_mask_prob=0.0` and `--model.prefix_mask_scale=none`.
+The defaults are `--model.prefix_mask_prob=0.0`, `--model.prefix_mask_scale=none`, and `--model.prefix_mask_scope=batch`. Batch scope samples one shared mask per prefix transition for the whole batch; use `sample` to recover per-sample masks.
 
 ## Training
 
@@ -87,6 +88,7 @@ Useful overrides:
 ```bash
 CIFAR100_DIR=/path/to/cifar100 \
 PREFIX_MASK_PROB=0.1 \
+PREFIX_MASK_SCOPE=batch \
 ./run_cifar100_experiments.sh
 ```
 

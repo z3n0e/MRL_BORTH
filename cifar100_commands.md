@@ -61,10 +61,10 @@ The sweep runs `python main.py full`: train, classification eval, Neural Collaps
 The CIFAR/ImageNet trainer supports MNIST-style inherited-prefix masking:
 
 ```bash
-PREFIX_MASK_PROB=0.1 PREFIX_MASK_SCALE=none ./run_cifar100_experiments.sh
+PREFIX_MASK_PROB=0.1 PREFIX_MASK_SCALE=none PREFIX_MASK_SCOPE=batch ./run_cifar100_experiments.sh
 ```
 
-The defaults are `PREFIX_MASK_PROB=0.0` and `PREFIX_MASK_SCALE=none`.
+The defaults are `PREFIX_MASK_PROB=0.0`, `PREFIX_MASK_SCALE=none`, and `PREFIX_MASK_SCOPE=batch`. Batch scope samples one shared mask per prefix transition for the whole batch; use `PREFIX_MASK_SCOPE=sample` for per-sample masks.
 
 ## Train MRL Directly
 
@@ -75,6 +75,7 @@ python train_imagenet.py \
   --config-file rn50_configs/rn18_cifar100.yaml \
   --model.mrl=1 \
   --model.prefix_mask_prob=0.1 \
+  --model.prefix_mask_scope=batch \
   --data.root=/path/to/cifar100/root \
   --logging.folder=trainlogs
 ```
