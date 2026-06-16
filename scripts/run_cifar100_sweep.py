@@ -20,6 +20,7 @@ LEGACY_ARG_MAP = {
     "--model.prefix_mask_prob": "--prefix-mask-prob",
     "--model.prefix_mask_scale": "--prefix-mask-scale",
     "--model.prefix_mask_scope": "--prefix-mask-scope",
+    "--model.prefix_mask_skip_prob": "--prefix-mask-skip-prob",
     "--training.epochs": "--epochs",
     "--training.batch_size": "--train-batch-size",
     "--training.seed": "--seed",

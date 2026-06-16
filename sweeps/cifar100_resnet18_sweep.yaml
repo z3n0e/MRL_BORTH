@@ -32,11 +32,13 @@ parameters:
   label-smoothing:
     values: [0.0]
   prefix-mask-prob:
-    values: [0.25, 0.5]
+    values: [0.25]
   prefix-mask-scale:
     value: none
   prefix-mask-scope:
     value: batch
+  prefix-mask-skip-prob:
+    value: 0.5
   mrl-loss-mode:
     values: [all]
   sampled-prefix-distribution:

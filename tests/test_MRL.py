@@ -176,6 +176,29 @@ def test_prefix_mask_batch_scope_shares_mask_across_batch(monkeypatch):
     assert torch.equal(masked[:, 2:], features[:, 2:])
 
 
+def test_prefix_mask_skip_prob_bypasses_mask(monkeypatch):
+    def fake_rand(*shape, device=None):
+        if shape == (1, 2):
+            return torch.zeros(shape, device=device)
+        if shape == (1, 1):
+            return torch.tensor([[0.25]], device=device)
+        raise AssertionError(f"unexpected random shape: {shape}")
+
+    monkeypatch.setattr(torch, "rand", fake_rand)
+    features = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+
+    masked = mask_previous_prefix_features(
+        features,
+        previous_dim=2,
+        mask_prob=0.5,
+        scale="none",
+        scope="batch",
+        skip_prob=0.5,
+    )
+
+    assert torch.equal(masked, features)
+
+
 def test_mrl_layer_batch_scope_samples_one_mask_per_prefix_transition(monkeypatch):
     def fake_rand(*shape, device=None):
         if shape == (1, 2):
@@ -231,6 +254,33 @@ def test_mrl_linear_layer_prefix_mask_training_only(monkeypatch):
     assert train_logits[1].item() == pytest.approx(7.0)
     assert eval_logits[0].item() == pytest.approx(3.0)
     assert eval_logits[1].item() == pytest.approx(10.0)
+
+
+def test_mrl_linear_layer_prefix_mask_skip_prob(monkeypatch):
+    def fake_rand(*shape, device=None):
+        if shape == (1, 2):
+            return torch.zeros(shape, device=device)
+        if shape == (1, 1):
+            return torch.zeros(shape, device=device)
+        raise AssertionError(f"unexpected random shape: {shape}")
+
+    monkeypatch.setattr(torch, "rand", fake_rand)
+    layer = MRL_Linear_Layer(
+        [2, 4],
+        num_classes=1,
+        efficient=False,
+        prefix_mask_prob=0.5,
+        prefix_mask_skip_prob=0.5,
+        bias=False,
+    )
+    for idx in range(2):
+        getattr(layer, f"nesting_classifier_{idx}").weight.data.fill_(1.0)
+    x = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+
+    logits = layer(x)
+
+    assert logits[0].item() == pytest.approx(3.0)
+    assert logits[1].item() == pytest.approx(10.0)
 
 
 def test_mrl_efficient_layer_prefix_mask(monkeypatch):

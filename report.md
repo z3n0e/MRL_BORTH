@@ -27,10 +27,11 @@ python train_imagenet.py \
   --model.mrl=1 \
   --model.prefix_mask_prob=0.1 \
   --model.prefix_mask_scale=none \
-  --model.prefix_mask_scope=batch
+  --model.prefix_mask_scope=batch \
+  --model.prefix_mask_skip_prob=0.25
 ```
 
-The default mask probability is `0.0`, the default mask scale is `none`, and the default mask scope is `batch`.
+The default mask probability is `0.0`, the default mask scale is `none`, the default mask scope is `batch`, and the default Bernoulli skip probability is `0.0`.
 
 ## Training
 

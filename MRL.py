@@ -35,10 +35,18 @@ def block_widths_from_nesting_list(nesting_list):
 	return [dims[0]] + [dim - prev_dim for prev_dim, dim in zip(dims, dims[1:])]
 
 
-def validate_prefix_mask(prefix_mask_prob, prefix_mask_scale, prefix_mask_scope="batch"):
+def validate_prefix_mask(
+	prefix_mask_prob,
+	prefix_mask_scale,
+	prefix_mask_scope="batch",
+	prefix_mask_skip_prob=0.0,
+):
 	prefix_mask_prob = float(prefix_mask_prob)
 	if not 0.0 <= prefix_mask_prob < 1.0:
 		raise ValueError("prefix_mask_prob must be in [0, 1)")
+	prefix_mask_skip_prob = float(prefix_mask_skip_prob)
+	if not 0.0 <= prefix_mask_skip_prob <= 1.0:
+		raise ValueError("prefix_mask_skip_prob must be in [0, 1]")
 	if prefix_mask_scale not in PREFIX_MASK_SCALES:
 		raise ValueError(
 			f"prefix_mask_scale must be one of {sorted(PREFIX_MASK_SCALES)}, "
@@ -49,20 +57,28 @@ def validate_prefix_mask(prefix_mask_prob, prefix_mask_scale, prefix_mask_scope=
 			f"prefix_mask_scope must be one of {sorted(PREFIX_MASK_SCOPES)}, "
 			f"got {prefix_mask_scope!r}"
 		)
-	return prefix_mask_prob, prefix_mask_scale, prefix_mask_scope
+	return prefix_mask_prob, prefix_mask_scale, prefix_mask_scope, prefix_mask_skip_prob
 
 
-def mask_previous_prefix_features(features, previous_dim, mask_prob, scale="none", scope="batch"):
+def mask_previous_prefix_features(
+	features,
+	previous_dim,
+	mask_prob,
+	scale="none",
+	scope="batch",
+	skip_prob=0.0,
+):
 	"""
 	Mask inherited coordinates for a larger MRL prefix during training.
 
 	For a prefix h[:d_i], only h[:d_{i-1}] is randomly masked; the new block
 	h[d_{i-1}:d_i] remains visible. This matches the MNIST neural-collapse
-	implementation while supporting batched CIFAR/ImageNet features.
+	implementation while supporting batched CIFAR/ImageNet features. If
+	skip_prob > 0, a Bernoulli gate sometimes bypasses this masking entirely.
 	"""
 	previous_dim = int(previous_dim)
-	mask_prob, scale, scope = validate_prefix_mask(mask_prob, scale, scope)
-	if previous_dim <= 0 or mask_prob == 0.0:
+	mask_prob, scale, scope, skip_prob = validate_prefix_mask(mask_prob, scale, scope, skip_prob)
+	if previous_dim <= 0 or mask_prob == 0.0 or skip_prob == 1.0:
 		return features
 	if previous_dim > features.shape[1]:
 		raise ValueError(
@@ -74,6 +90,11 @@ def mask_previous_prefix_features(features, previous_dim, mask_prob, scale="none
 	mask = keep.to(dtype=features.dtype)
 	if scale == "inverted":
 		mask = mask / (1.0 - mask_prob)
+	if skip_prob > 0.0:
+		apply_mask = (torch.rand(mask_batch_size, 1, device=features.device) >= skip_prob).to(
+			dtype=features.dtype
+		)
+		mask = apply_mask * mask + (1.0 - apply_mask)
 
 	masked = features.clone()
 	masked[:, :previous_dim] = masked[:, :previous_dim] * mask
@@ -211,16 +232,23 @@ class MRL_Linear_Layer(nn.Module):
 		prefix_mask_prob=0.0,
 		prefix_mask_scale="none",
 		prefix_mask_scope="batch",
+		prefix_mask_skip_prob=0.0,
 		**kwargs,
 	):
 		super().__init__()
 		self.nesting_list = validate_nesting_list(nesting_list)
 		self.num_classes = int(num_classes)
 		self.efficient = bool(efficient)
-		self.prefix_mask_prob, self.prefix_mask_scale, self.prefix_mask_scope = validate_prefix_mask(
+		(
+			self.prefix_mask_prob,
+			self.prefix_mask_scale,
+			self.prefix_mask_scope,
+			self.prefix_mask_skip_prob,
+		) = validate_prefix_mask(
 			prefix_mask_prob,
 			prefix_mask_scale,
 			prefix_mask_scope,
+			prefix_mask_skip_prob,
 		)
 		self.last_prefixes = None
 		self.last_raw_prefixes = None
@@ -255,6 +283,7 @@ class MRL_Linear_Layer(nn.Module):
 				mask_prob=self.prefix_mask_prob,
 				scale=self.prefix_mask_scale,
 				scope=self.prefix_mask_scope,
+				skip_prob=self.prefix_mask_skip_prob,
 			)
 		return prefix
 

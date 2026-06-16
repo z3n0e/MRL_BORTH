@@ -14,6 +14,7 @@ model:
   prefix_mask_prob: 0.0
   prefix_mask_scale: none
   prefix_mask_scope: batch
+  prefix_mask_skip_prob: 0.0
 resolution:
   end_ramp: 0
   max_res: 32

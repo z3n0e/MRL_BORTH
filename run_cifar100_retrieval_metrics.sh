@@ -29,6 +29,7 @@ TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=${SAMPLED_PREFIX_LOG_INTERVAL:-}
 TRAINING_PREFIX_MASK_PROB=${PREFIX_MASK_PROB:-}
 TRAINING_PREFIX_MASK_SCALE=${PREFIX_MASK_SCALE:-}
 TRAINING_PREFIX_MASK_SCOPE=${PREFIX_MASK_SCOPE:-}
+TRAINING_PREFIX_MASK_SKIP_PROB=${PREFIX_MASK_SKIP_PROB:-}
 
 if [[ -f "$MANIFEST" ]]; then
     while IFS='=' read -r key value; do
@@ -51,6 +52,9 @@ if [[ -f "$MANIFEST" ]]; then
             prefix_mask_scope)
                 [[ -z "$TRAINING_PREFIX_MASK_SCOPE" ]] && TRAINING_PREFIX_MASK_SCOPE=$value
                 ;;
+            prefix_mask_skip_prob)
+                [[ -z "$TRAINING_PREFIX_MASK_SKIP_PROB" ]] && TRAINING_PREFIX_MASK_SKIP_PROB=$value
+                ;;
         esac
     done < "$MANIFEST"
 fi
@@ -61,6 +65,7 @@ TRAINING_SAMPLED_PREFIX_LOG_INTERVAL=${TRAINING_SAMPLED_PREFIX_LOG_INTERVAL:-100
 TRAINING_PREFIX_MASK_PROB=${TRAINING_PREFIX_MASK_PROB:-0.0}
 TRAINING_PREFIX_MASK_SCALE=${TRAINING_PREFIX_MASK_SCALE:-none}
 TRAINING_PREFIX_MASK_SCOPE=${TRAINING_PREFIX_MASK_SCOPE:-batch}
+TRAINING_PREFIX_MASK_SKIP_PROB=${TRAINING_PREFIX_MASK_SKIP_PROB:-0.0}
 
 PYTHON=${PYTHON:-python}
 CIFAR100_DIR=${CIFAR100_DIR:-"$HOME/.cache/torchvision"}
@@ -94,7 +99,7 @@ echo "Metric k values: $SHORTLIST"
 echo "Feature dim: $FEATURE_DIM"
 echo "Prefix dims: $PREFIX_DIMS"
 echo "Training MRL loss mode: $TRAINING_MRL_LOSS_MODE"
-echo "Training prefix mask: p=$TRAINING_PREFIX_MASK_PROB scale=$TRAINING_PREFIX_MASK_SCALE scope=$TRAINING_PREFIX_MASK_SCOPE"
+echo "Training prefix mask: p=$TRAINING_PREFIX_MASK_PROB scale=$TRAINING_PREFIX_MASK_SCALE scope=$TRAINING_PREFIX_MASK_SCOPE skip_p=$TRAINING_PREFIX_MASK_SKIP_PROB"
 echo
 
 run_mrl() {
@@ -205,7 +210,8 @@ run_mrl
     "$TRAINING_SAMPLED_PREFIX_LOG_INTERVAL" \
     "$TRAINING_PREFIX_MASK_PROB" \
     "$TRAINING_PREFIX_MASK_SCALE" \
-    "$TRAINING_PREFIX_MASK_SCOPE" <<'PY'
+    "$TRAINING_PREFIX_MASK_SCOPE" \
+    "$TRAINING_PREFIX_MASK_SKIP_PROB" <<'PY'
 import csv
 import json
 import sys
@@ -219,6 +225,7 @@ training_sampled_prefix_log_interval = sys.argv[5]
 training_prefix_mask_prob = sys.argv[6]
 training_prefix_mask_scale = sys.argv[7]
 training_prefix_mask_scope = sys.argv[8]
+training_prefix_mask_skip_prob = sys.argv[9]
 rows = []
 
 for path in sorted(metrics_dir.glob("*.json")):
@@ -234,6 +241,7 @@ for path in sorted(metrics_dir.glob("*.json")):
             "training_prefix_mask_prob": training_prefix_mask_prob,
             "training_prefix_mask_scale": training_prefix_mask_scale,
             "training_prefix_mask_scope": training_prefix_mask_scope,
+            "training_prefix_mask_skip_prob": training_prefix_mask_skip_prob,
             "feature_config": data.get("feature_config", ""),
             "eval_config": data.get("eval_config", ""),
             "index_type": data.get("index_type", ""),
@@ -256,6 +264,7 @@ fieldnames = [
     "training_prefix_mask_prob",
     "training_prefix_mask_scale",
     "training_prefix_mask_scope",
+    "training_prefix_mask_skip_prob",
     "feature_config", "eval_config", "index_type",
     "dim", "k", "top1", "cmc@1", "cmc@5", "mAP", "precision", "recall", "topk",
     "neighbors_path",

@@ -46,6 +46,7 @@ Section("model", "model details").params(
 	prefix_mask_prob=Param(float, "training-only inherited-prefix mask probability", default=0.0),
 	prefix_mask_scale=Param(And(str, OneOf(["inverted", "none"])), "prefix mask scaling", default="none"),
 	prefix_mask_scope=Param(And(str, OneOf(["sample", "batch"])), "prefix mask sharing scope", default="batch"),
+	prefix_mask_skip_prob=Param(float, "probability of bypassing prefix masking", default=0.0),
 )
 
 Section("resolution", "resolution scheduling").params(
@@ -256,6 +257,7 @@ class ImageNetTrainer:
 	@param("model.prefix_mask_prob")
 	@param("model.prefix_mask_scale")
 	@param("model.prefix_mask_scope")
+	@param("model.prefix_mask_skip_prob")
 	@param("data.dataset")
 	@param("training.seed")
 	@param("training.deterministic")
@@ -268,6 +270,7 @@ class ImageNetTrainer:
 		prefix_mask_prob,
 		prefix_mask_scale,
 		prefix_mask_scope,
+		prefix_mask_skip_prob,
 		dataset,
 		seed,
 		deterministic,
@@ -289,14 +292,18 @@ class ImageNetTrainer:
 		self.prefix_mask_prob = float(prefix_mask_prob)
 		self.prefix_mask_scale = prefix_mask_scale
 		self.prefix_mask_scope = prefix_mask_scope
+		self.prefix_mask_skip_prob = float(prefix_mask_skip_prob)
 		self.dataset = dataset
 		self.dataset_config = DATASET_CONFIGS[dataset]
 		self.num_classes = self.dataset_config["num_classes"]
 		self.uid = str(uuid4())
 		self.wandb_run = None
 
-		if self.prefix_mask_prob > 0.0 and not self.nesting:
-			raise ValueError("--model.prefix_mask_prob requires --model.mrl=1 or --model.efficient=1")
+		if (self.prefix_mask_prob > 0.0 or self.prefix_mask_skip_prob > 0.0) and not self.nesting:
+			raise ValueError(
+				"--model.prefix_mask_prob and --model.prefix_mask_skip_prob require "
+				"--model.mrl=1 or --model.efficient=1"
+			)
 
 		self.train_loader = self.create_train_loader()
 		self.val_loader = self.create_val_loader()
@@ -592,7 +599,7 @@ class ImageNetTrainer:
 				print(
 					"MRL prefix masking enabled: "
 					f"p={self.prefix_mask_prob}, scale={self.prefix_mask_scale}, "
-					f"scope={self.prefix_mask_scope}"
+					f"scope={self.prefix_mask_scope}, skip_p={self.prefix_mask_skip_prob}"
 				)
 			model.fc = MRL_Linear_Layer(
 				self.nesting_list,
@@ -601,6 +608,7 @@ class ImageNetTrainer:
 				prefix_mask_prob=self.prefix_mask_prob,
 				prefix_mask_scale=self.prefix_mask_scale,
 				prefix_mask_scope=self.prefix_mask_scope,
+				prefix_mask_skip_prob=self.prefix_mask_skip_prob,
 			)
 		elif self.fixed_feature != 2048:
 			if self.fixed_feature > feature_dim:
@@ -1020,6 +1028,7 @@ class ImageNetTrainer:
 				"prefix_mask_prob": self.prefix_mask_prob,
 				"prefix_mask_scale": self.prefix_mask_scale,
 				"prefix_mask_scope": self.prefix_mask_scope,
+				"prefix_mask_skip_prob": self.prefix_mask_skip_prob,
 			}
 		if startup_log:
 			self.log(startup_log)

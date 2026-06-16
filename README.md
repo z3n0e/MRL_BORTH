@@ -51,10 +51,11 @@ python train_imagenet.py \
   --model.mrl=1 \
   --model.prefix_mask_prob=0.1 \
   --model.prefix_mask_scale=none \
-  --model.prefix_mask_scope=batch
+  --model.prefix_mask_scope=batch \
+  --model.prefix_mask_skip_prob=0.25
 ```
 
-The defaults are `--model.prefix_mask_prob=0.0`, `--model.prefix_mask_scale=none`, and `--model.prefix_mask_scope=batch`. Batch scope samples one shared mask per prefix transition for the whole batch; use `sample` to recover per-sample masks.
+The defaults are `--model.prefix_mask_prob=0.0`, `--model.prefix_mask_scale=none`, `--model.prefix_mask_scope=batch`, and `--model.prefix_mask_skip_prob=0.0`. Batch scope samples one shared coordinate mask and one shared skip gate per prefix transition for the whole batch; use `sample` to recover per-sample masks and gates. With `prefix_mask_skip_prob=q`, a Bernoulli gate bypasses masking with probability `q`.
 
 ## Training
 
@@ -89,6 +90,7 @@ Useful overrides:
 CIFAR100_DIR=/path/to/cifar100 \
 PREFIX_MASK_PROB=0.1 \
 PREFIX_MASK_SCOPE=batch \
+PREFIX_MASK_SKIP_PROB=0.25 \
 ./run_cifar100_experiments.sh
 ```
 

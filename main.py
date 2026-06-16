@@ -233,6 +233,7 @@ def add_training_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--prefix-mask-prob", type=float, default=0.0)
     parser.add_argument("--prefix-mask-scale", default=DEFAULT_PREFIX_MASK_SCALE, choices=("none", "inverted"))
     parser.add_argument("--prefix-mask-scope", default=DEFAULT_PREFIX_MASK_SCOPE, choices=("sample", "batch"))
+    parser.add_argument("--prefix-mask-skip-prob", type=float, default=0.0)
 
 
 def add_nc_args(parser: argparse.ArgumentParser, *, default_enabled: int = 1) -> None:
@@ -290,6 +291,7 @@ def train_command(args: argparse.Namespace, run_dir: Path) -> list[str]:
         f"--model.prefix_mask_prob={args.prefix_mask_prob}",
         f"--model.prefix_mask_scale={args.prefix_mask_scale}",
         f"--model.prefix_mask_scope={args.prefix_mask_scope}",
+        f"--model.prefix_mask_skip_prob={args.prefix_mask_skip_prob}",
         f"--data.root={args.data_root}",
         f"--data.num_workers={args.workers}",
         f"--training.batch_size={args.train_batch_size}",
@@ -532,6 +534,7 @@ def run_full(args: argparse.Namespace) -> int:
         f"--model.prefix_mask_prob={args.prefix_mask_prob}",
         f"--model.prefix_mask_scale={args.prefix_mask_scale}",
         f"--model.prefix_mask_scope={args.prefix_mask_scope}",
+        f"--model.prefix_mask_skip_prob={args.prefix_mask_skip_prob}",
         f"--training.epochs={args.epochs}",
         f"--training.batch_size={args.train_batch_size}",
         f"--training.seed={args.seed}",

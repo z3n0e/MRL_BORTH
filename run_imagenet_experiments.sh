@@ -50,6 +50,7 @@ SAMPLED_PREFIX_LOG_INTERVAL=${SAMPLED_PREFIX_LOG_INTERVAL:-100}
 PREFIX_MASK_PROB=${PREFIX_MASK_PROB:-0.0}
 PREFIX_MASK_SCALE=${PREFIX_MASK_SCALE:-none}
 PREFIX_MASK_SCOPE=${PREFIX_MASK_SCOPE:-batch}
+PREFIX_MASK_SKIP_PROB=${PREFIX_MASK_SKIP_PROB:-0.0}
 RUN_RETRIEVAL_METRICS=${RUN_RETRIEVAL_METRICS:-1}
 
 TRAINLOG_DIR="$EXPERIMENT_DIR/trainlogs"
@@ -69,6 +70,7 @@ echo "MRL loss mode: $MRL_LOSS_MODE"
 echo "Prefix mask probability: $PREFIX_MASK_PROB"
 echo "Prefix mask scale: $PREFIX_MASK_SCALE"
 echo "Prefix mask scope: $PREFIX_MASK_SCOPE"
+echo "Prefix mask skip probability: $PREFIX_MASK_SKIP_PROB"
 echo "Run retrieval metrics: $RUN_RETRIEVAL_METRICS"
 
 MRL_TRAINING_ARGS=(
@@ -78,6 +80,7 @@ MRL_TRAINING_ARGS=(
     --model.prefix_mask_prob="$PREFIX_MASK_PROB"
     --model.prefix_mask_scale="$PREFIX_MASK_SCALE"
     --model.prefix_mask_scope="$PREFIX_MASK_SCOPE"
+    --model.prefix_mask_skip_prob="$PREFIX_MASK_SKIP_PROB"
 )
 
 write_manifest() {
@@ -105,6 +108,7 @@ write_manifest() {
         echo "prefix_mask_prob=$PREFIX_MASK_PROB"
         echo "prefix_mask_scale=$PREFIX_MASK_SCALE"
         echo "prefix_mask_scope=$PREFIX_MASK_SCOPE"
+        echo "prefix_mask_skip_prob=$PREFIX_MASK_SKIP_PROB"
         echo "run_retrieval_metrics=$RUN_RETRIEVAL_METRICS"
     } > "$EXPERIMENT_DIR/manifest.txt"
 }
