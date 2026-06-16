@@ -38,7 +38,7 @@ CIFAR100_DIR=/path/to/cifar100/root ./run_cifar100_experiments.sh
 W&B logging is enabled by default and is additive to the existing local logs:
 
 ```bash
-WANDB_PROJECT=mrl-borth ./run_cifar100_experiments.sh
+WANDB_PROJECT=MRL_BORTH ./run_cifar100_experiments.sh
 ```
 
 Disable W&B with `WANDB_ENABLED=0`.

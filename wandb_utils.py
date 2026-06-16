@@ -3,6 +3,9 @@ import os
 from typing import Any, Dict, Iterable, Optional
 
 
+DEFAULT_WANDB_PROJECT = "MRL_BORTH"
+
+
 def env_flag(name: str, default: int = 0) -> int:
 	value = os.environ.get(name)
 	if value is None:
@@ -58,7 +61,7 @@ def clean_metrics(metrics: Dict[str, Any]) -> Dict[str, Any]:
 def init_wandb_run(
 	enabled: bool,
 	*,
-	project: str = "",
+	project: str = DEFAULT_WANDB_PROJECT,
 	entity: str = "",
 	group: str = "",
 	name: str = "",
@@ -76,12 +79,13 @@ def init_wandb_run(
 		print("W&B logging requested but wandb is not installed; continuing without W&B.")
 		return None
 
+	os.environ["WANDB_PROJECT"] = DEFAULT_WANDB_PROJECT
+
 	init_kwargs = {
 		"config": clean_metrics(config or {}),
 		"tags": parse_tags(tags),
 	}
-	if project:
-		init_kwargs["project"] = project
+	init_kwargs["project"] = DEFAULT_WANDB_PROJECT
 	if entity:
 		init_kwargs["entity"] = entity
 	if group:

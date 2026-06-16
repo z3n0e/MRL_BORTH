@@ -68,7 +68,7 @@ parameters:
   wandb-enabled:
     value: 1
   wandb-project:
-    value: mrl-borth
+    value: MRL_BORTH
   wandb-group:
     value: cifar100-resnet18-mrl-sweep
   wandb-tags:

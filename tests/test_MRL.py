@@ -1,3 +1,5 @@
+import argparse
+
 import numpy as np
 import pytest
 import torch
@@ -20,6 +22,7 @@ from retrieval.metrics import (
     top1_accuracy,
 )
 from neural_collapse.metrics import nc_metrics
+import main
 
 
 def test_forward():
@@ -399,3 +402,25 @@ def test_nc2_etf_infeasible_below_class_threshold():
 
     assert metrics["nc2_etf_feasible"] == pytest.approx(0.0)
     assert np.isnan(metrics["nc2_etf_error"])
+
+
+def test_child_env_preserves_wandb_agent_project(monkeypatch):
+    monkeypatch.setenv("WANDB_SWEEP_ID", "tcibvp7w")
+    monkeypatch.setenv("WANDB_PROJECT", "MRL_BORTH")
+    monkeypatch.setenv("WANDB_ENTITY", "sricci")
+    args = argparse.Namespace(
+        seed=123,
+        wandb_enabled=1,
+        wandb_project="WRONG_PROJECT",
+        wandb_entity="",
+        wandb_group="cifar100-resnet18-mrl-sweep",
+        wandb_name="",
+        wandb_tags="cifar100,resnet18,mrl,sweep,main-cli",
+        wandb_mode="",
+        wandb_dir="",
+    )
+
+    env = main.child_env(args)
+
+    assert env["WANDB_PROJECT"] == "MRL_BORTH"
+    assert env["WANDB_ENTITY"] == "sricci"

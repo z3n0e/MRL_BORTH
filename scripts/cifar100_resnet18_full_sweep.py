@@ -25,6 +25,7 @@ POLL_SECONDS = 10.0
 CHILD_SHUTDOWN_TIMEOUT = 30.0
 PREFIX_DIMS = "8,16,32,64,128,256,512"
 SHORTLIST = "1,5,10,25,50,100"
+DEFAULT_WANDB_PROJECT = "MRL_BORTH"
 DEFAULT_PREFIX_MASK_SCALE = "none"
 ALLOW_INVERTED_PREFIX_MASK_ENV = "MRL_ALLOW_PREFIX_MASK_SCALE_INVERTED"
 
@@ -57,6 +58,11 @@ def normalized_exit_code(returncode: int) -> int:
     return 128 + abs(int(returncode)) if int(returncode) < 0 else int(returncode)
 
 
+def in_wandb_sweep(env: dict[str, str] | None = None) -> bool:
+    env = os.environ if env is None else env
+    return bool(env.get("WANDB_SWEEP_ID"))
+
+
 def enforce_prefix_mask_scale(args: argparse.Namespace) -> None:
     if str(args.model_prefix_mask_scale).lower() == "inverted" and env_flag(ALLOW_INVERTED_PREFIX_MASK_ENV, 0) != 1:
         print(
@@ -65,6 +71,16 @@ def enforce_prefix_mask_scale(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         args.model_prefix_mask_scale = DEFAULT_PREFIX_MASK_SCALE
+
+
+def enforce_wandb_project(args: argparse.Namespace) -> None:
+    if str(args.wandb_project) != DEFAULT_WANDB_PROJECT:
+        print(
+            f"wandb.project={args.wandb_project!r} was supplied; forcing "
+            f"wandb.project={DEFAULT_WANDB_PROJECT!r}.",
+            file=sys.stderr,
+        )
+        args.wandb_project = DEFAULT_WANDB_PROJECT
 
 
 def child_popen_kwargs() -> dict:
@@ -165,7 +181,7 @@ def parse_args() -> argparse.Namespace:
     add_arg(parser, "retrieval.force_arrays", type=int, default=0)
 
     add_arg(parser, "wandb.enabled", type=int, default=1)
-    add_arg(parser, "wandb.project", default=os.environ.get("WANDB_PROJECT", "mrl-borth"))
+    add_arg(parser, "wandb.project", default=DEFAULT_WANDB_PROJECT)
     add_arg(parser, "wandb.entity", default=os.environ.get("WANDB_ENTITY", ""))
     add_arg(parser, "wandb.group", default=os.environ.get("WANDB_GROUP", "cifar100-resnet18-mrl-sweep"))
     add_arg(parser, "wandb.name", default=os.environ.get("WANDB_NAME", ""))
@@ -796,6 +812,7 @@ def write_manifest(args: argparse.Namespace, paths: dict[str, Path], metrics_fil
 def main() -> int:
     args = parse_args()
     enforce_prefix_mask_scale(args)
+    enforce_wandb_project(args)
     force_deterministic(args)
     resolve_data_root(args)
     paths = make_paths(args)

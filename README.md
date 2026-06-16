@@ -93,7 +93,7 @@ PREFIX_MASK_PROB=0.1 \
 W&B logging is additive to the existing logs and is on by default:
 
 ```bash
-WANDB_PROJECT=mrl-borth \
+WANDB_PROJECT=MRL_BORTH \
 ./run_cifar100_experiments.sh
 ```
 

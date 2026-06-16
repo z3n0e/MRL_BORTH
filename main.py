@@ -17,6 +17,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_PREFIX_DIMS = "8,16,32,64,128,256,512"
 LOGGER_NAME = "cifar100"
 CHILD_SHUTDOWN_TIMEOUT = 30.0
+DEFAULT_WANDB_PROJECT = "MRL_BORTH"
 DEFAULT_PREFIX_MASK_SCALE = "none"
 ALLOW_INVERTED_PREFIX_MASK_ENV = "MRL_ALLOW_PREFIX_MASK_SCALE_INVERTED"
 
@@ -57,6 +58,11 @@ def normalized_exit_code(returncode: int) -> int:
     return 128 + abs(int(returncode)) if int(returncode) < 0 else int(returncode)
 
 
+def in_wandb_sweep(env: dict[str, str] | None = None) -> bool:
+    env = os.environ if env is None else env
+    return bool(env.get("WANDB_SWEEP_ID"))
+
+
 def enforce_prefix_mask_scale(args: argparse.Namespace) -> None:
     if not hasattr(args, "prefix_mask_scale"):
         return
@@ -67,6 +73,18 @@ def enforce_prefix_mask_scale(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         args.prefix_mask_scale = DEFAULT_PREFIX_MASK_SCALE
+
+
+def enforce_wandb_project(args: argparse.Namespace) -> None:
+    if not hasattr(args, "wandb_project"):
+        return
+    if str(args.wandb_project) != DEFAULT_WANDB_PROJECT:
+        print(
+            f"wandb-project={args.wandb_project!r} was supplied; forcing "
+            f"wandb-project={DEFAULT_WANDB_PROJECT!r}.",
+            file=sys.stderr,
+        )
+        args.wandb_project = DEFAULT_WANDB_PROJECT
 
 
 def command_text(command: list[str]) -> str:
@@ -161,14 +179,15 @@ def child_env(args: argparse.Namespace, *, wandb_enabled: str | None = None) -> 
     env.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     wandb_env = {
         "WANDB_ENABLED": getattr(args, "wandb_enabled", None),
-        "WANDB_PROJECT": getattr(args, "wandb_project", None),
-        "WANDB_ENTITY": getattr(args, "wandb_entity", None),
+        "WANDB_PROJECT": DEFAULT_WANDB_PROJECT,
         "WANDB_GROUP": getattr(args, "wandb_group", None),
         "WANDB_NAME": getattr(args, "wandb_name", None),
         "WANDB_TAGS": getattr(args, "wandb_tags", None),
         "WANDB_MODE": getattr(args, "wandb_mode", None),
         "WANDB_DIR": getattr(args, "wandb_dir", None),
     }
+    if getattr(args, "wandb_entity", None) not in {None, ""}:
+        wandb_env["WANDB_ENTITY"] = getattr(args, "wandb_entity")
     for key, value in wandb_env.items():
         if value not in {None, ""}:
             env[key] = str(value)
@@ -189,7 +208,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--eval-workers", type=int, default=4)
     parser.add_argument("--log-level", default="INFO")
     parser.add_argument("--wandb-enabled", type=int, default=env_flag("WANDB_ENABLED", 1))
-    parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "mrl-borth"))
+    parser.add_argument("--wandb-project", default=DEFAULT_WANDB_PROJECT)
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
     parser.add_argument("--wandb-group", default=os.environ.get("WANDB_GROUP", ""))
     parser.add_argument("--wandb-name", default=os.environ.get("WANDB_NAME", ""))
@@ -586,6 +605,7 @@ def main() -> int:
     configure_logging(args.log_level)
     install_interrupt_handlers()
     enforce_prefix_mask_scale(args)
+    enforce_wandb_project(args)
     if getattr(args, "command", "") in {"eval", "nc", "retrieval"} and not args.run_dir and not args.checkpoint:
         parser.error(f"{args.command} requires --run-dir or --checkpoint")
     try:

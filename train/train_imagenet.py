@@ -80,7 +80,7 @@ Section("logging", "logging settings").params(
 
 Section("wandb", "optional W&B side-channel logging").params(
 	enabled=Param(int, "enable W&B logging? (1/0)", default=env_flag("WANDB_ENABLED", 1)),
-	project=Param(str, "W&B project", default=env_default("WANDB_PROJECT", "mrl-borth")),
+	project=Param(str, "W&B project", default="MRL_BORTH"),
 	entity=Param(str, "W&B entity", default=env_default("WANDB_ENTITY", "")),
 	group=Param(str, "W&B group", default=env_default("WANDB_GROUP", "")),
 	name=Param(str, "W&B run name", default=env_default("WANDB_NAME", "")),

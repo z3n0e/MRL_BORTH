@@ -234,7 +234,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--output-csv", required=True)
 	parser.add_argument("--output-json", default="")
 	parser.add_argument("--wandb-enabled", type=int, default=env_flag("WANDB_ENABLED", 1), help="enable W&B logging? (1/0)")
-	parser.add_argument("--wandb-project", default=env_default("WANDB_PROJECT", "mrl-borth"))
+	parser.add_argument("--wandb-project", default="MRL_BORTH")
 	parser.add_argument("--wandb-entity", default=env_default("WANDB_ENTITY", ""))
 	parser.add_argument("--wandb-group", default=env_default("WANDB_GROUP", ""))
 	parser.add_argument("--wandb-name", default=env_default("WANDB_NAME", ""))
