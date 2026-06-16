@@ -20,7 +20,7 @@ parameters:
   val-batch-size:
     value: 128
   seed:
-    values: [56, 123, 999, 876, 456]
+    values: [56, 123, 999]#, 876, 456]
   lr:
     value: 0.1
   warmup-epochs:
@@ -38,7 +38,7 @@ parameters:
   mrl-loss-mode:
     values: [all]
   sampled-prefix-distribution:
-    values: [uniform, inverse_sqrt_dim]
+    values: [uniform]
   sampled-prefix-log-interval:
     value: 100
   eval-workers:
